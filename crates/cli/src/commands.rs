@@ -271,8 +271,24 @@ async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_serve() -> anyhow::Result<()> {
-    echo::warn("Serve command not yet implemented");
-    Ok(())
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
+    let dashboard_token = std::env::var("DASHBOARD_TOKEN").unwrap_or_else(|_| "changeme".to_string());
+
+    echo::info(&format!("Starting web server with token: {}", dashboard_token));
+
+    let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
+    let bsky_client = Arc::new(BskyClient::new(&pds_host, Some(repo.clone())));
+
+    bsky_client.load_from_database().await;
+
+    let server = thunderbot_core::Server::new(repo, bsky_client);
+
+    echo::success("Web server starting on http://127.0.0.1:3000");
+    echo::info("Use the following Authorization header:");
+    echo::info(&format!("  Authorization: Bearer {}", dashboard_token));
+
+    server.serve().await
 }
 
 async fn handle_status() -> anyhow::Result<()> {

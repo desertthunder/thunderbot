@@ -5,6 +5,7 @@ pub mod gemini;
 pub mod jetstream;
 pub mod processor;
 pub mod vector;
+pub mod web;
 
 pub use agent::Agent;
 pub use bsky::{BskyClient, Session};
@@ -19,3 +20,4 @@ pub use vector::{
     EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, GeminiEmbeddingProvider, Memory, MemoryConfig,
     MemoryMetadata, MemoryWithScore, SearchFilter, SemanticRetriever, SqliteVecStore, VectorStats, VectorStore,
 };
+pub use web::Server;

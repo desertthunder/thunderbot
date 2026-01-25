@@ -26,6 +26,21 @@ thunderbot db migrate
 thunderbot serve
 ```
 
+## Web Dashboard
+
+ThunderBot includes a web-based control deck for monitoring and managing the bot. See `docs/web-dashboard.md` for full documentation.
+
+Quick start:
+
+```bash
+export DASHBOARD_TOKEN=your-secure-token
+thunderbot serve
+
+
+Dashboard available at `http://127.0.0.1:3000`
+
+```
+
 ## Environment Variables (.env)
 
 ```bash
@@ -35,6 +50,7 @@ BSKY_APP_PASSWORD=app-password
 PDS_HOST=https://bsky.social
 GEMINI_API_KEY=your-key
 GEMINI_MODEL=gemini-3-pro-preview
+DASHBOARD_TOKEN=changeme
 ```
 
 ## Project Structure
@@ -42,6 +58,14 @@ GEMINI_MODEL=gemini-3-pro-preview
 ```sh
 crates/cli/       # CLI entry point, command handlers
 crates/core/      # Core logic
+  src/agent.rs          # Orchestration (coordinates all modules)
+  src/processor.rs      # Event processing pipeline
+  src/jetstream/        # WebSocket firehose client
+  src/bsky/             # XRPC client for Bluesky
+  src/db/               # libSQL repository + thread context
+  src/gemini/           # API client + prompt builder
+  src/vector/           # LanceDB + embeddings + retrieval
+  src/web/              # Axum web server + HTMX dashboard
   src/agent.rs          # Orchestration (coordinates all modules)
   src/processor.rs      # Event processing pipeline
   src/jetstream/        # WebSocket firehose client
@@ -107,9 +131,14 @@ Indexes on: `thread_root_uri`, `author_did`, `created_at`, `last_updated`
 
 **vector/retrieval.rs**: Semantic search with LanceDB, filters by author/role, returns scored results
 
+**web/server.rs**: Axum HTTP server with routing, authentication middleware
+**web/handlers.rs**: Request handlers for dashboard endpoints
+**web/templates.rs**: Maud HTML templates with Pico CSS styling
+**web/auth.rs**: Bearer token authentication middleware
+
 ## Dependencies
 
-tokio, reqwest, libsql, lancedb, tokio-tungstenite, clap, serde, tracing, anyhow, chrono, async-compression (zstd)
+tokio, reqwest, libsql, lancedb, tokio-tungstenite, clap, serde, tracing, anyhow, chrono, async-compression (zstd), axum, maud, tower-http
 
 ## Workspace Config
 

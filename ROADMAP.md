@@ -6,7 +6,7 @@ For completed milestones, see CHANGELOG.md.
 
 ## System Architecture
 
-- **Runtime**: Provider-agnostic Rust binary. Deployable to Fly.io (containers), Docker, or any container runtime.
+- **Runtime**: Provider-agnostic Rust binary. Deployable locally, in Docker, or any container runtime.
 - **Ingestion**: Manual WebSocket client consuming Jetstream via `tokio-tungstenite` with zstd decompression.
 - **State Store**: libSQL/SQLite (embedded or Turso cloud). Portable, single-file database with replication support.
 - **Vector Store**: SQLite with sqlite-vec extension for unified persistence.
@@ -15,98 +15,113 @@ For completed milestones, see CHANGELOG.md.
 - **Frontend**: Server-side rendered HTML (HTMX) with Pico CSS, served directly from the application.
 - **CLI**: `clap`-based command-line interface for ad-hoc testing and system interaction.
 
-## Milestone 7: The Control Deck (Web UI)
+## Milestone 7: The Control Deck
 
-**Goal**: A lightweight, fast dashboard to monitor the bot's "brain" and state, using modern HTMX + Pico.
-
-**Definition of Done**:
-
-1. Landing page `/` that explains the purpose and provides a link to the dashboard
-2. A web route `/dashboard` displays live stats of the bot.
-3. Admins can view the raw "Conversation Tables" and "Identity Maps".
-4. A "Manual Override" feature allowing the admin to post as the bot via the UI.
-5. Auth protection through BSky app password is active.
-
-**Tasks**:
-
-1. **HTMX + Pico Setup**
-    - **Requirements**:
-        - Add `axum` for HTTP routing (with feature flags for different runtimes).
-        - Serve Pico CSS from CDN or embedded assets.
-        - Implement HTML templating using `maud` crate.
-        - Create the main layout: Sidebar (Status, Logs, Chat, Config) + Content Area.
-        - Set up HTMX for checking server health/status every 5s (`hx-trigger="every 5s"`).
-
-    ```html
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.jade.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
-    ```
-
-2. **Live Status Dashboard**
-    - **Requirements**:
-        - Create a widget showing "Last Jetstream Event" timestamp.
-        - Create a widget showing "Processing Queue Depth".
-        - Create a widget showing "Monthly Token Usage" (estimated count).
-        - Use HTMX to swap these numbers in real-time.
-
-3. **Conversation Inspector**
-    - **Requirements**:
-        - Create a view that lists recent threads (grouped by `root_uri`).
-        - Clicking a thread loads the full message history (User + Bot + Thoughts) into a detail view.
-        - Style the chat to look like a messenger app using Pico's chat bubbles.
-        - Indicate "Thinking Time" or latency metrics for each bot reply.
-
-4. **Admin Controls**
-    - **Requirements**:
-        - Implement a "Pause Bot" toggle (stops event processing).
-        - Implement a "Clear Context" button (clear history for a specific thread).
-        - Implement a simple form to send a raw post (Broadcast) from the bot account.
-        - Ensure all admin routes are behind authentication middleware.
-
-## Milestone 8: Deployment and Reliability
-
-**Goal**: Harden the system for continuous operation with provider-agnostic deployment.
+**Goal**: A dedicated Bluesky client for chatting with ThunderBot. Messages sent through the web UI post to Bluesky mentioning `@thunderbot.bsky.social`. Conversations exist on both platforms.
 
 **Definition of Done**:
 
-1. System handles 24/7 operation with automatic recovery.
-2. Secrets are managed via environment variables or secret managers.
-3. Logging output is structured (JSON) and queryable.
-4. Codebase is clean, formatted, and documented.
+1. Users authenticate with BlueSky credentials (handle + app password)
+2. Access restricted to handles in `ALLOWED_HANDLES` environment variable
+3. Chat interface posts messages as the user mentioning the bot
+4. View your conversation threads with the bot
+5. Post broadcasts as the bot (admin)
+6. Monitor status and control bot behavior
 
-**Tasks**:
+See `docs/web-dashboard.md` for full feature documentation.
 
-1. **Containerization**
-    - **Requirements**:
-        - Create multi-stage `Dockerfile` with cargo-chef for cached builds.
-        - Support both `x86_64` and `aarch64` targets.
-        - Minimize image size with `scratch` or `distroless` base.
-        - Document deployment to Fly.io, Shuttle, and container registries.
+### Completed
 
-2. **Structured Logging**
-    - **Requirements**:
-        - Implement `tracing` middleware that outputs JSON logs.
-        - Include `trace_id` for every request/event to trace from Jetstream through Gemini to Bsky.
-        - Log specific "Thinking" traces if available (for debugging).
-        - Support log levels configurable via environment.
+- [x] Landing page with dashboard link
+- [x] Status page with live statistics (conversations, threads, identities)
+- [x] Threads view with conversation inspector
+- [x] Identities table showing DID/handle cache
+- [x] Admin page with manual post form
+- [x] Pause/resume bot controls
+- [x] HTMX integration for dynamic updates
+- [x] Pico CSS jade theme
 
-3. **Error Boundaries and Recovery**
-    - **Requirements**:
-        - Wrap main event loop with proper error handling and recovery.
-        - Implement a "Dead Letter" table: If a message fails processing 3 times, move it to `failed_events`.
-        - Implement health check endpoint for load balancer probes.
-        - Add metrics endpoint for Prometheus scraping (optional).
+### Remaining Tasks
 
-4. **Final Polish**
-    - **Requirements**:
-        - Run `cargo fmt` and `cargo clippy` with strict settings.
-        - Write `README.md` with "How to Deploy" instructions for multiple providers.
-        - Perform a 24-hour soak test.
-        - Document architecture decisions in ADR format.
+1. **BlueSky Authentication**
+    - Create login page accepting handle and app password
+    - Validate credentials via `BskyClient::create_session()`
+    - Check handle against `ALLOWED_HANDLES` allowlist
+    - Store encrypted session in cookie (AES-256-GCM)
+    - Include `access_jwt` and `refresh_jwt` for posting as user
+    - Auto-refresh expired tokens
 
-5. **CLI: Operations Commands**
-    - **Requirements**:
-        - `status` - Show service health and connection status.
-        - `serve` - Start the main daemon (Jetstream listener + event processor).
-        - `serve --dry-run` - Process events without posting replies.
+2. **Chat Interface**
+    - Create `/chat` route showing user's threads with the bot
+    - Build chat UI with message history
+    - Post messages as user with `@thunderbot.bsky.social` mention
+    - Generate proper mention facets for the post
+    - Character counter (300 limit, ~275 after mention)
+    - HTMX polling for real-time updates
+    - Support thread continuation (replies)
+
+3. **Typography Update**
+    - Add Google Fonts: JetBrains Mono (body), Lora (headings)
+    - Update base layout template with font imports
+    - Apply monospace styling to data tables and code
+    - Keep Pico CSS jade theme for colors and components
+
+4. **Unified Navigation**
+    - Sidebar sections: Status, Chat, Threads, Broadcast, Config
+    - Show logged-in handle in header
+    - Logout button
+    - Consistent styling across all pages
+
+5. **Configuration Panel**
+    - Move pause/resume to dedicated config section
+    - Add clear context functionality
+    - Show connection diagnostics
+    - Display current system prompt
+
+## Milestone 8: Self-Hosting
+
+**Goal**: Make ThunderBot easy to run locally or in containers for personal deployments.
+
+**Definition of Done**:
+
+1. Bot runs reliably as a local process with systemd/launchd
+2. Docker container builds and runs correctly
+3. Data persists across restarts
+4. Logs are structured and actionable
+5. Documentation covers all deployment scenarios
+
+See `docs/web-dashboard.md` for environment variable reference.
+
+### Tasks
+
+1. **Local Process Support**
+    - Add `--address` and `--port` flags to `serve` command
+    - Support `.env` file loading at startup
+    - Document systemd unit file for Linux
+    - Document launchd plist for macOS
+
+2. **Containerization**
+    - Create multi-stage `Dockerfile` for minimal image size
+    - Create `docker-compose.yml` with volume mounts
+    - Support both `x86_64` and `aarch64` architectures
+    - Add `/health` endpoint for container orchestration
+
+3. **Structured Logging**
+    - Configure `tracing` for JSON output
+    - Add request correlation IDs
+    - Log Jetstream events, Gemini calls, Bluesky posts with context
+
+4. **Error Recovery**
+    - Wrap event loop with error handling and reconnection
+    - Exponential backoff for transient failures
+    - Health check returning connection status
+
+5. **CLI Operations**
+    - `serve --address 0.0.0.0` for container binding
+    - `serve --dry-run` to process events without posting
+    - `status` command showing service health
+
+6. **Documentation**
+    - Deployment guide: local, Docker, Fly.io
+    - Backup and restore procedures
+    - Troubleshooting section
