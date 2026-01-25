@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-01-25
+
+### Added
+
+- BlueSky authentication with encrypted session cookies and auto-refresh
+- Chat interface for posting messages mentioning @thunderbot.bsky.social
+- User-specific thread filtering and reply support
+- JetBrains Mono and Lora fonts for developer-focused typography
+- Unified navigation sidebar with Status, Chat, Threads, Broadcast, and Config sections
+- Configuration panel with pause/resume, thread context clearing, and connection diagnostics
+- Mention facet support and character counter for chat messages
+
+### Changed
+
+- Moved pause/resume controls from Admin page to dedicated Config section
+- Updated post creation to use PostRecordWrite builder pattern
+
 ## [0.6.0] - 2026-01-25
 
 ### Changed

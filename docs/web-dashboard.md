@@ -121,18 +121,18 @@ Fonts loaded from Google Fonts CDN. The Pico CSS jade theme provides the color p
 - Threads list and detail view
 - Identities table
 - Admin page with post form and pause/resume buttons
-- Bearer token authentication via `DASHBOARD_TOKEN`
+- BlueSky authentication with encrypted session cookies
+- Chat interface for posting messages mentioning @thunderbot.bsky.social
+- User-filtered thread view in chat
+- JetBrains Mono and Lora fonts for developer-focused typography
+- Unified navigation sidebar with Status, Chat, Threads, Broadcast, and Config sections
+- Configuration panel with pause/resume, thread context clearing, connection diagnostics, and system prompt display
+- Mention facet support for proper @ mentions
+- Session token auto-refresh
+- Character counter for chat messages (300 character limit)
+- Logout functionality
 - HTMX integration for dynamic updates
 - Pico CSS jade theme
-
-## Planned Features
-
-1. BlueSky authentication (post as logged-in user)
-2. Chat interface that posts mentions to the bot
-3. User-filtered thread view
-4. Typography update (JetBrains Mono + Lora)
-5. Unified navigation between sections
-6. Configuration panel
 
 ## Environment Variables
 
@@ -144,22 +144,21 @@ Fonts loaded from Google Fonts CDN. The Pico CSS jade theme provides the color p
 
 ## Routes
 
-Current:
-
 - `GET /` - Landing page
 - `GET /dashboard` - Status and statistics
+- `GET /login` - Login form
+- `POST /login` - Authenticate with BlueSky
+- `POST /logout` - End session
+- `GET /chat` - Chat interface (your threads with bot)
+- `POST /chat/send` - Post message mentioning bot
 - `GET /threads` - Thread list (all)
 - `GET /thread/:id` - Thread detail
 - `GET /identities` - Identity cache
 - `GET /admin` - Admin controls
+- `GET /config` - Configuration panel
 - `POST /api/post` - Create Bluesky post (as bot)
 - `POST /api/pause` - Pause bot
 - `POST /api/resume` - Resume bot
-
-Planned:
-
-- `GET /login` - Login form
-- `POST /login` - Authenticate with BlueSky
-- `GET /chat` - Chat interface (your threads with bot)
-- `POST /chat/send` - Post message mentioning bot
-- `POST /logout` - End session
+- `POST /api/clear-thread` - Clear thread context
+- `POST /api/login` - Authenticate with BlueSky
+- `POST /api/chat/send` - Post message mentioning bot

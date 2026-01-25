@@ -38,6 +38,7 @@ pub trait DatabaseRepository: Send + Sync {
     async fn save_conversation(&self, row: ConversationRow) -> Result<()>;
     async fn get_thread_history(&self, thread_root_uri: &str) -> Result<Vec<ConversationRow>>;
     async fn get_all_threads(&self, limit: usize) -> Result<Vec<String>>;
+    async fn get_user_threads(&self, author_did: &str, limit: usize) -> Result<Vec<String>>;
     async fn save_identity(&self, row: IdentityRow) -> Result<()>;
     async fn cache_identity(&self, did: &str, handle: &str) -> Result<()>;
     async fn get_identity(&self, did: &str) -> Result<Option<IdentityRow>>;
@@ -173,6 +174,25 @@ impl DatabaseRepository for LibsqlRepository {
 
         let threads = self
             .query(sql, [limit as i64], |row| Ok::<String, anyhow::Error>(row.get(0)?))
+            .await?;
+
+        Ok(threads)
+    }
+
+    async fn get_user_threads(&self, author_did: &str, limit: usize) -> Result<Vec<String>> {
+        let sql = r#"
+            SELECT DISTINCT thread_root_uri
+            FROM conversations
+            WHERE author_did = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        "#;
+
+        let limit = format!("{}", limit);
+        let threads = self
+            .query(sql, [author_did, limit.as_str()], |row| {
+                Ok::<String, anyhow::Error>(row.get(0)?)
+            })
             .await?;
 
         Ok(threads)

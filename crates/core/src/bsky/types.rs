@@ -1,3 +1,4 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +58,55 @@ pub struct PostRecordWrite {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply: Option<ReplyRefWrite>,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "facets")]
+    pub facets: Vec<Facet>,
+}
+
+impl PostRecordWrite {
+    pub fn new(text: String, created_at: String) -> Self {
+        Self { record_type: "app.bsky.feed.post".to_string(), text, created_at, reply: None, facets: Vec::new() }
+    }
+}
+
+impl Default for PostRecordWrite {
+    fn default() -> Self {
+        Self::new(String::new(), Utc::now().to_rfc3339())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Facet {
+    #[serde(rename = "$type")]
+    pub facet_type: String,
+    pub features: Vec<FacetFeature>,
+    pub index: ByteSlice,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "$type")]
+pub enum FacetFeature {
+    #[serde(rename = "app.bsky.richtext.facet#mention")]
+    Mention { did: String },
+    #[serde(rename = "app.bsky.richtext.facet#link")]
+    Link { uri: String },
+    #[serde(rename = "app.bsky.richtext.facet#tag")]
+    Tag { tag: String },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ByteSlice {
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+impl Facet {
+    pub fn mention(did: String, byte_start: usize, byte_end: usize) -> Self {
+        Self {
+            facet_type: "app.bsky.richtext.facet".to_string(),
+            features: vec![FacetFeature::Mention { did }],
+            index: ByteSlice { byte_start, byte_end },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

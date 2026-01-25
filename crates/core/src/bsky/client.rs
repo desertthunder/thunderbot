@@ -176,12 +176,7 @@ impl BskyClient {
 
         let url = format!("{}/xrpc/com.atproto.repo.createRecord", self.pds_host);
 
-        let record = PostRecordWrite {
-            record_type: "app.bsky.feed.post".to_string(),
-            text: text.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            reply: None,
-        };
+        let record = PostRecordWrite::new(text.to_string(), Utc::now().to_rfc3339());
 
         let request = CreateRecordRequest {
             repo: session.did.clone(),
@@ -221,15 +216,11 @@ impl BskyClient {
 
         let url = format!("{}/xrpc/com.atproto.repo.createRecord", self.pds_host);
 
-        let record = PostRecordWrite {
-            record_type: "app.bsky.feed.post".to_string(),
-            text: text.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            reply: Some(ReplyRefWrite {
-                root: StrongRefWrite { uri: root_uri.to_string(), cid: root_cid.to_string() },
-                parent: StrongRefWrite { uri: parent_uri.to_string(), cid: parent_cid.to_string() },
-            }),
-        };
+        let mut record = PostRecordWrite::new(text.to_string(), Utc::now().to_rfc3339());
+        record.reply = Some(ReplyRefWrite {
+            root: StrongRefWrite { uri: root_uri.to_string(), cid: root_cid.to_string() },
+            parent: StrongRefWrite { uri: parent_uri.to_string(), cid: parent_cid.to_string() },
+        });
 
         let request = CreateRecordRequest {
             repo: session.did.clone(),

@@ -1,8 +1,9 @@
 use crate::bsky::BskyClient;
 use crate::db::DatabaseRepository;
 use crate::web::handlers::{
-    WebAppState, get_admin, get_dashboard, get_identities, get_landing, get_status, get_thread_detail, get_threads,
-    post_clear_thread, post_pause, post_post, post_resume,
+    WebAppState, get_admin, get_chat, get_config, get_dashboard, get_identities, get_landing, get_login, get_status,
+    get_thread_detail, get_threads, post_chat_send, post_clear_thread, post_login, post_logout, post_pause, post_post,
+    post_resume,
 };
 use anyhow::Result;
 use axum::Router;
@@ -36,15 +37,21 @@ impl Server {
         Router::new()
             .route("/", get(get_landing))
             .route("/dashboard", get(get_dashboard))
+            .route("/login", get(get_login))
+            .route("/logout", post(post_logout))
+            .route("/chat", get(get_chat))
             .route("/threads", get(get_threads))
             .route("/thread/:thread_id", get(get_thread_detail))
             .route("/identities", get(get_identities))
             .route("/admin", get(get_admin))
+            .route("/config", get(get_config))
             .route("/api/status", get(get_status))
             .route("/api/post", post(post_post))
             .route("/api/pause", post(post_pause))
             .route("/api/resume", post(post_resume))
             .route("/api/clear-thread", post(post_clear_thread))
+            .route("/api/login", post(post_login))
+            .route("/api/chat/send", post(post_chat_send))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())
             .with_state(self.app_state.clone())
