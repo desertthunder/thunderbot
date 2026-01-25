@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod echo;
 
 use clap::Parser;
 use cli::Cli;
@@ -8,6 +9,7 @@ use tracing::Level;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
     let level = match cli.verbose {
         0 => Level::WARN,
         1 => Level::INFO,

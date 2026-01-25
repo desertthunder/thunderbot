@@ -59,25 +59,52 @@ async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use thunderbot_core::{DatabaseRepository, LibsqlRepository, ThreadContextBuilder};
+
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
+
     match command {
         cli::DbCommands::Migrate => {
-            tracing::info!("Migrate command not yet implemented");
+            tracing::info!("Running database migrations...");
+            repo.run_migration().await?;
+            println!("Database migrations completed successfully");
             Ok(())
         }
         cli::DbCommands::Stats => {
-            tracing::info!("Stats command not yet implemented");
+            let stats = repo.get_stats().await?;
+            println!("Database Statistics:");
+            println!("  Conversations: {}", stats.conversation_count);
+            println!("  Threads: {}", stats.thread_count);
+            println!("  Identities: {}", stats.identity_count);
             Ok(())
         }
         cli::DbCommands::Threads { limit } => {
-            tracing::info!("Threads command not yet implemented: {}", limit);
+            let threads = repo.get_all_threads(*limit).await?;
+            println!("Recent Threads ({}):", limit);
+            for (i, thread) in threads.iter().enumerate() {
+                println!("  {}. {}", i + 1, thread);
+            }
             Ok(())
         }
         cli::DbCommands::Thread { root_uri } => {
-            tracing::info!("Thread command not yet implemented: {}", root_uri);
+            let context_builder = ThreadContextBuilder::new(repo.clone());
+            let context = context_builder.build(root_uri).await?;
+
+            println!("Thread: {}", context.root_uri);
+            println!("Messages:");
+            for msg in context.messages {
+                println!("  [{}] {}: {}", msg.role, msg.author_did, msg.content);
+            }
             Ok(())
         }
         cli::DbCommands::Identities => {
-            tracing::info!("Identities command not yet implemented");
+            let identities = repo.get_all_identities().await?;
+            println!("Cached Identities ({}):", identities.len());
+            for identity in identities {
+                println!("  {} -> {} ({})", identity.did, identity.handle, identity.last_updated);
+            }
             Ok(())
         }
     }

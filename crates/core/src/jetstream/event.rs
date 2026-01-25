@@ -12,7 +12,6 @@ pub enum JetstreamEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommitEvent {
     pub did: String,
-    #[serde(rename = "timeUs")]
     pub time_us: i64,
     pub commit: CommitData,
 }
@@ -76,6 +75,20 @@ pub struct PostRecord {
     pub created_at: String,
     #[serde(default)]
     pub facets: Vec<Facet>,
+    #[serde(default)]
+    pub reply: Option<ReplyRef>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReplyRef {
+    pub root: StrongRef,
+    pub parent: StrongRef,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StrongRef {
+    pub uri: String,
+    pub cid: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

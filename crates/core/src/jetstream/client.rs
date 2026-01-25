@@ -33,8 +33,7 @@ impl JetstreamClient {
 
 impl Default for JetstreamClient {
     fn default() -> Self {
-        let url = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post&compress=true"
-            .to_string();
+        let url = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.feed.post".to_string();
         Self { url }
     }
 }
@@ -55,17 +54,22 @@ impl WebSocketStream {
                     Ok(None)
                 }
             },
-            Some(Ok(Message::Binary(data))) => {
-                let decompressed = zstd::decode_all(&data[..])?;
-                let text = String::from_utf8(decompressed)?;
-                match serde_json::from_str::<JetstreamEvent>(&text) {
-                    Ok(event) => Ok(Some(event)),
+            Some(Ok(Message::Binary(data))) => match String::from_utf8(data.into()) {
+                Ok(text) => match serde_json::from_str::<JetstreamEvent>(&text) {
+                    Ok(event) => {
+                        tracing::debug!("Received binary message, length: {}", text.len());
+                        Ok(Some(event))
+                    }
                     Err(e) => {
                         tracing::error!("Failed to parse JSON: {}", e);
                         Ok(None)
                     }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to decode binary data as UTF-8: {}", e);
+                    Ok(None)
                 }
-            }
+            },
             Some(Ok(Message::Close(_))) => {
                 tracing::warn!("WebSocket connection closed");
                 Ok(None)
