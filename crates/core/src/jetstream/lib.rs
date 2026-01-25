@@ -1,6 +1,6 @@
+use crate::db::{Db, LibsqlRepository};
 use crate::jetstream::{client::JetstreamClient, filter::JetstreamFilter};
 use crate::processor::EventProcessor;
-use crate::db::{LibsqlRepository, Db};
 use std::sync::Arc;
 
 pub async fn listen(filter_did: Option<String>, duration: Option<u64>) -> anyhow::Result<()> {

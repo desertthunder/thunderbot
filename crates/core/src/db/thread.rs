@@ -40,16 +40,11 @@ impl ThreadContextBuilder {
             })
             .collect();
 
-        Ok(ThreadContext {
-            root_uri: root_uri.to_string(),
-            messages,
-        })
+        Ok(ThreadContext { root_uri: root_uri.to_string(), messages })
     }
 
     pub async fn build_with_handle_context(
-        &self,
-        root_uri: &str,
-        identity_resolver: &crate::db::IdentityResolver,
+        &self, root_uri: &str, identity_resolver: &crate::db::IdentityResolver,
     ) -> Result<String> {
         let context = self.build(root_uri).await?;
 
@@ -73,20 +68,11 @@ impl ThreadContextBuilder {
         Ok(formatted_messages.join("\n"))
     }
 
-    pub fn determine_root_uri(
-        post_uri: &str,
-        reply_ref: Option<&crate::jetstream::event::ReplyRef>,
-    ) -> String {
-        if let Some(reply) = reply_ref {
-            reply.root.uri.clone()
-        } else {
-            post_uri.to_string()
-        }
+    pub fn determine_root_uri(post_uri: &str, reply_ref: Option<&crate::jetstream::event::ReplyRef>) -> String {
+        if let Some(reply) = reply_ref { reply.root.uri.clone() } else { post_uri.to_string() }
     }
 
-    pub fn extract_parent_uri(
-        reply_ref: Option<&crate::jetstream::event::ReplyRef>,
-    ) -> Option<String> {
+    pub fn extract_parent_uri(reply_ref: Option<&crate::jetstream::event::ReplyRef>) -> Option<String> {
         reply_ref.map(|r| r.parent.uri.clone())
     }
 }
@@ -108,21 +94,15 @@ mod tests {
             },
         };
 
-        let root_uri = ThreadContextBuilder::determine_root_uri(
-            "at://did:plc:xxx/app.bsky.feed.post/child",
-            Some(&reply_ref),
-        );
+        let root_uri =
+            ThreadContextBuilder::determine_root_uri("at://did:plc:xxx/app.bsky.feed.post/child", Some(&reply_ref));
 
-        assert_eq!(
-            root_uri,
-            "at://did:plc:xxx/app.bsky.feed.post/root"
-        );
+        assert_eq!(root_uri, "at://did:plc:xxx/app.bsky.feed.post/root");
     }
 
     #[test]
     fn test_determine_root_uri_without_reply() {
-        let root_uri =
-            ThreadContextBuilder::determine_root_uri("at://did:plc:xxx/app.bsky.feed.post/new", None);
+        let root_uri = ThreadContextBuilder::determine_root_uri("at://did:plc:xxx/app.bsky.feed.post/new", None);
 
         assert_eq!(root_uri, "at://did:plc:xxx/app.bsky.feed.post/new");
     }

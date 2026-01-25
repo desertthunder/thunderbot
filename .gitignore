@@ -21,3 +21,7 @@ target
 #.idea/
 .vscode/
 .env
+
+# Persistence
+*.db
+.bsky_session.json

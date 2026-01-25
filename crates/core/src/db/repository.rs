@@ -23,6 +23,15 @@ pub struct IdentityRow {
     pub last_updated: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub did: String,
+    pub handle: String,
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[async_trait::async_trait]
 pub trait DatabaseRepository: Send + Sync {
     async fn run_migration(&self) -> Result<()>;
@@ -30,8 +39,11 @@ pub trait DatabaseRepository: Send + Sync {
     async fn get_thread_history(&self, thread_root_uri: &str) -> Result<Vec<ConversationRow>>;
     async fn get_all_threads(&self, limit: usize) -> Result<Vec<String>>;
     async fn save_identity(&self, row: IdentityRow) -> Result<()>;
+    async fn cache_identity(&self, did: &str, handle: &str) -> Result<()>;
     async fn get_identity(&self, did: &str) -> Result<Option<IdentityRow>>;
     async fn get_all_identities(&self) -> Result<Vec<IdentityRow>>;
+    async fn save_session(&self, row: SessionRow) -> Result<()>;
+    async fn get_session(&self, did: &str) -> Result<Option<SessionRow>>;
     async fn get_stats(&self) -> Result<DatabaseStats>;
 }
 
@@ -78,8 +90,23 @@ impl LibsqlRepository {
 #[async_trait::async_trait]
 impl DatabaseRepository for LibsqlRepository {
     async fn run_migration(&self) -> Result<()> {
-        let migration_sql = include_str!("../../migrations/001_init.sql");
-        self.execute(migration_sql, ()).await?;
+        let migration_001 = include_str!("../../migrations/001_init.sql");
+        let migration_002 = include_str!("../../migrations/002_add_session.sql");
+
+        for statement in migration_001.split(';') {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                self.execute(statement, ()).await?;
+            }
+        }
+
+        for statement in migration_002.split(';') {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                self.execute(statement, ()).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -170,6 +197,16 @@ impl DatabaseRepository for LibsqlRepository {
         .await
     }
 
+    async fn cache_identity(&self, did: &str, handle: &str) -> Result<()> {
+        let sql = r#"
+            INSERT OR REPLACE INTO identities (did, handle, last_updated)
+            VALUES (?1, ?2, ?3)
+        "#;
+
+        self.execute(sql, params![did, handle, Utc::now().to_rfc3339().as_str()])
+            .await
+    }
+
     async fn get_identity(&self, did: &str) -> Result<Option<IdentityRow>> {
         let sql = r#"
             SELECT did, handle, last_updated
@@ -245,6 +282,49 @@ impl DatabaseRepository for LibsqlRepository {
             thread_count: *thread_count,
             identity_count: *identity_count,
         })
+    }
+
+    async fn save_session(&self, row: SessionRow) -> Result<()> {
+        let sql = r#"
+            INSERT OR REPLACE INTO sessions (did, handle, access_jwt, refresh_jwt, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+        "#;
+
+        self.execute(
+            sql,
+            params![
+                row.did.as_str(),
+                row.handle.as_str(),
+                row.access_jwt.as_str(),
+                row.refresh_jwt.as_str(),
+                row.updated_at.to_rfc3339().as_str()
+            ],
+        )
+        .await
+    }
+
+    async fn get_session(&self, did: &str) -> Result<Option<SessionRow>> {
+        let sql = r#"
+            SELECT did, handle, access_jwt, refresh_jwt, updated_at
+            FROM sessions
+            WHERE did = ?1
+        "#;
+
+        let rows = self
+            .query(sql, [did], |row| {
+                Ok(SessionRow {
+                    did: row.get(0)?,
+                    handle: row.get(1)?,
+                    access_jwt: row.get(2)?,
+                    refresh_jwt: row.get(3)?,
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<String>(4)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })
+            .await?;
+
+        Ok(rows.into_iter().next())
     }
 }
 

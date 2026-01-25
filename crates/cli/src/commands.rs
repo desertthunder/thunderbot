@@ -1,4 +1,6 @@
 use crate::cli::{self, Cli, Commands, JetstreamCommands};
+use crate::echo;
+use anyhow::Context;
 
 use thunderbot_core::jetstream;
 
@@ -30,29 +32,113 @@ async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use thunderbot_core::BskyClient;
+
+    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
+
+    let client = BskyClient::new(&pds_host, Some(repo));
+
+    client.load_from_database().await;
+
     match command {
         cli::BskyCommands::Login => {
-            tracing::info!("Login command not yet implemented");
+            let handle = std::env::var("BSKY_HANDLE").context("BSKY_HANDLE not set")?;
+            let password = std::env::var("BSKY_APP_PASSWORD").context("BSKY_APP_PASSWORD not set")?;
+
+            let session = client.create_session(&handle, &password).await?;
+
+            echo::success("Successfully logged in!");
+            println!("  Handle: {}", session.handle);
+            println!("  DID: {}", session.did);
             Ok(())
         }
         cli::BskyCommands::Whoami => {
-            tracing::info!("Whoami command not yet implemented");
+            let session = client
+                .get_session()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("No active session. Run 'bsky login' first."))?;
+
+            echo::header("Current session");
+            println!("  Handle: {}", session.handle);
+            println!("  DID: {}", session.did);
             Ok(())
         }
         cli::BskyCommands::Post { text } => {
-            tracing::info!("Post command not yet implemented: {}", text);
+            let result = client.create_post(text).await?;
+
+            echo::success("Post created successfully!");
+            println!("  URI: {}", result.uri);
+            println!("  CID: {}", result.cid);
             Ok(())
         }
         cli::BskyCommands::Reply { uri, text } => {
-            tracing::info!("Reply command not yet implemented: {} -> {}", uri, text);
+            let post = client.get_post(uri).await?;
+            let post_record = post.value;
+
+            let parent_cid = post_record
+                .get("cid")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Post missing cid"))?;
+
+            let root_uri = post_record
+                .get("reply")
+                .and_then(|r| r.get("root"))
+                .and_then(|r| r.get("uri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or(uri);
+
+            let root_cid = post_record
+                .get("reply")
+                .and_then(|r| r.get("root"))
+                .and_then(|r| r.get("cid"))
+                .and_then(|c| c.as_str())
+                .unwrap_or(parent_cid);
+
+            let result = client.reply_to_post(text, uri, parent_cid, root_uri, root_cid).await?;
+
+            echo::success("Reply created successfully!");
+            println!("  URI: {}", result.uri);
+            println!("  CID: {}", result.cid);
             Ok(())
         }
         cli::BskyCommands::Resolve { handle } => {
-            tracing::info!("Resolve command not yet implemented: {}", handle);
+            let did = client.resolve_handle(handle).await?;
+
+            echo::success("Resolved handle");
+            println!("  {} -> {}", handle, did);
             Ok(())
         }
         cli::BskyCommands::GetPost { uri } => {
-            tracing::info!("GetPost command not yet implemented: {}", uri);
+            let post = client.get_post(uri).await?;
+            let post_record = post.value;
+
+            let text = post_record.get("text").and_then(|t| t.as_str()).unwrap_or("");
+
+            let author_did = post_record
+                .get("author")
+                .and_then(|a| a.get("did"))
+                .and_then(|d| d.as_str())
+                .unwrap_or("unknown");
+
+            let created_at = post_record.get("createdAt").and_then(|t| t.as_str()).unwrap_or("");
+
+            echo::header("Post details");
+            println!("  URI: {}", post.uri);
+            println!("  CID: {}", post.cid);
+            println!("  Author DID: {}", author_did);
+            println!("  Created at: {}", created_at);
+            println!("  Text: {}", text);
+
+            if let Some(reply) = post_record.get("reply")
+                && let Some(parent) = reply.get("parent")
+                && let Some(parent_uri) = parent.get("uri").and_then(|u| u.as_str())
+            {
+                println!("  Reply to: {}", parent_uri);
+            }
+
             Ok(())
         }
     }
@@ -69,12 +155,12 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
         cli::DbCommands::Migrate => {
             tracing::info!("Running database migrations...");
             repo.run_migration().await?;
-            println!("Database migrations completed successfully");
+            echo::success("Database migrations completed successfully");
             Ok(())
         }
         cli::DbCommands::Stats => {
             let stats = repo.get_stats().await?;
-            println!("Database Statistics:");
+            echo::header("Database Statistics");
             println!("  Conversations: {}", stats.conversation_count);
             println!("  Threads: {}", stats.thread_count);
             println!("  Identities: {}", stats.identity_count);
@@ -82,7 +168,7 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
         }
         cli::DbCommands::Threads { limit } => {
             let threads = repo.get_all_threads(*limit).await?;
-            println!("Recent Threads ({}):", limit);
+            echo::info(&format!("Recent Threads ({}):", limit));
             for (i, thread) in threads.iter().enumerate() {
                 println!("  {}. {}", i + 1, thread);
             }
@@ -92,8 +178,8 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
             let context_builder = ThreadContextBuilder::new(repo.clone());
             let context = context_builder.build(root_uri).await?;
 
-            println!("Thread: {}", context.root_uri);
-            println!("Messages:");
+            echo::header(&format!("Thread: {}", context.root_uri));
+            echo::info("Messages:");
             for msg in context.messages {
                 println!("  [{}] {}: {}", msg.role, msg.author_did, msg.content);
             }
@@ -101,7 +187,7 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
         }
         cli::DbCommands::Identities => {
             let identities = repo.get_all_identities().await?;
-            println!("Cached Identities ({}):", identities.len());
+            echo::info(&format!("Cached Identities ({}):", identities.len()));
             for identity in identities {
                 println!("  {} -> {} ({})", identity.did, identity.handle, identity.last_updated);
             }
@@ -113,42 +199,42 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
 async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
     match command {
         cli::AiCommands::Prompt { text } => {
-            tracing::info!("Prompt command not yet implemented: {}", text);
+            echo::warn(&format!("Prompt command not yet implemented: {}", text));
             Ok(())
         }
         cli::AiCommands::Chat => {
-            tracing::info!("Chat command not yet implemented");
+            echo::warn("Chat command not yet implemented");
             Ok(())
         }
         cli::AiCommands::Context { root_uri } => {
-            tracing::info!("Context command not yet implemented: {}", root_uri);
+            echo::warn(&format!("Context command not yet implemented: {}", root_uri));
             Ok(())
         }
         cli::AiCommands::Simulate { root_uri } => {
-            tracing::info!("Simulate command not yet implemented: {}", root_uri);
+            echo::warn(&format!("Simulate command not yet implemented: {}", root_uri));
             Ok(())
         }
     }
 }
 
 async fn handle_serve() -> anyhow::Result<()> {
-    tracing::info!("Serve command not yet implemented");
+    echo::warn("Serve command not yet implemented");
     Ok(())
 }
 
 async fn handle_status() -> anyhow::Result<()> {
-    tracing::info!("Status command not yet implemented");
+    echo::warn("Status command not yet implemented");
     Ok(())
 }
 
 async fn handle_config(command: &cli::ConfigCommands) -> anyhow::Result<()> {
     match command {
         cli::ConfigCommands::Show => {
-            tracing::info!("Config show command not yet implemented");
+            echo::warn("Config show command not yet implemented");
             Ok(())
         }
         cli::ConfigCommands::Validate => {
-            tracing::info!("Config validate command not yet implemented");
+            echo::warn("Config validate command not yet implemented");
             Ok(())
         }
     }

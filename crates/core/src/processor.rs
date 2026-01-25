@@ -6,6 +6,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct EventProcessor {
     event_tx: mpsc::Sender<JetstreamEvent>,
     db: Db,
