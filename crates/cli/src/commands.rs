@@ -16,6 +16,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
     match command {
         JetstreamCommands::Listen { filter_did, duration } => {
@@ -197,21 +198,79 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use thunderbot_core::{
+        Agent, BskyClient, IdentityResolver, IdentityResolverConfig, LibsqlRepository, ThreadContextBuilder,
+    };
+
+    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
+
+    let bsky_client = Arc::new(BskyClient::new(&pds_host, Some(repo.clone())));
+    bsky_client.load_from_database().await;
+
     match command {
         cli::AiCommands::Prompt { text } => {
-            echo::warn(&format!("Prompt command not yet implemented: {}", text));
+            let agent = Agent::from_clients(bsky_client, repo.clone(), "did:plc:placeholder".to_string(), None)?;
+
+            let response = agent.one_shot_prompt(text).await?;
+
+            echo::success("Response from Gemini:");
+            println!("  {}", response);
             Ok(())
         }
         cli::AiCommands::Chat => {
-            echo::warn("Chat command not yet implemented");
-            Ok(())
+            use std::io::{self, Write};
+
+            let agent = Agent::from_clients(bsky_client, repo, "did:plc:placeholder".to_string(), None)?;
+
+            echo::info("Interactive chat mode (press Ctrl+C to exit)");
+
+            loop {
+                print!("> ");
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+
+                let input = input.trim();
+                if input.is_empty() {
+                    continue;
+                }
+
+                match agent.one_shot_prompt(input).await {
+                    Ok(response) => {
+                        echo::info("Gemini:");
+                        println!("  {}", response);
+                    }
+                    Err(e) => {
+                        echo::error(&format!("Error: {}", e));
+                    }
+                }
+            }
         }
         cli::AiCommands::Context { root_uri } => {
-            echo::warn(&format!("Context command not yet implemented: {}", root_uri));
+            let context_builder = ThreadContextBuilder::new(repo.clone());
+            let identity_resolver = IdentityResolver::new(repo, IdentityResolverConfig::default());
+
+            let context = context_builder
+                .build_with_handle_context(root_uri, &identity_resolver)
+                .await?;
+
+            echo::header("Prompt Context");
+            println!("{}", context);
+
             Ok(())
         }
         cli::AiCommands::Simulate { root_uri } => {
-            echo::warn(&format!("Simulate command not yet implemented: {}", root_uri));
+            let agent = Agent::from_clients(bsky_client, repo.clone(), "did:plc:placeholder".to_string(), None)?;
+
+            let response = agent.simulate_response(root_uri).await?;
+
+            echo::success("Simulated Response (not posted):");
+            println!("  {}", response);
+
             Ok(())
         }
     }

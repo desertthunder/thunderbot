@@ -1,8 +1,8 @@
 use crate::db::{ConversationRow, Db, ThreadContextBuilder};
 use crate::jetstream::event::{JetstreamEvent, PostRecord};
+
 use chrono::Utc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -20,7 +20,7 @@ impl EventProcessor {
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 if let Err(e) = Self::process_event(event, &db_clone).await {
-                    error!("Error processing event: {}", e);
+                    tracing::error!("Error processing event: {}", e);
                 }
             }
         });
@@ -63,7 +63,7 @@ impl EventProcessor {
 
         db.save_conversation(conversation_row).await?;
 
-        info!("Saved conversation for DID: {}", commit.did);
+        tracing::info!("Saved conversation for DID: {}", commit.did);
 
         Ok(())
     }

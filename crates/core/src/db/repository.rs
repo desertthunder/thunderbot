@@ -163,18 +163,16 @@ impl DatabaseRepository for LibsqlRepository {
     }
 
     async fn get_all_threads(&self, limit: usize) -> Result<Vec<String>> {
-        let sql = format!(
-            r#"
-            SELECT DISTINCT thread_root_uri
+        let sql = r#"
+            SELECT thread_root_uri
             FROM conversations
+            GROUP BY thread_root_uri
             ORDER BY MAX(created_at) DESC
-            LIMIT {}
-        "#,
-            limit
-        );
+            LIMIT ?
+        "#;
 
         let threads = self
-            .query(&sql, (), |row| Ok::<String, anyhow::Error>(row.get(0)?))
+            .query(sql, [limit as i64], |row| Ok::<String, anyhow::Error>(row.get(0)?))
             .await?;
 
         Ok(threads)

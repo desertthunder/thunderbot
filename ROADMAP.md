@@ -221,6 +221,23 @@ This document outlines the engineering specification for a **Stateful AI Agent**
         - `ai context <ROOT_URI>` - Build and display the prompt context for a thread.
         - `ai simulate <ROOT_URI>` - Simulate a response without posting.
 
+**Free Tier Rate Limits (as of January 2026)**:
+
+| Model                    | API ID                   | RPM   | TPM     | RPD     | Context    |
+| ------------------------ | ------------------------ | ----- | ------- | ------- | ---------- |
+| Gemini 2.5 Pro           | `gemini-2.5-pro`         | 5     | 250,000 | 100     | 1M tokens  |
+| Gemini 2.5 Flash         | `gemini-2.5-flash`       | 10-15 | 250,000 | 250-500 | 1M tokens  |
+| Gemini 2.5 Flash-Lite    | `gemini-2.5-flash-lite`  | 15    | 250,000 | 1,000   | 1M tokens  |
+| Gemini 3 Pro (Preview)   | `gemini-3-pro-preview`   | 10    | 250,000 | 100     | 1M+ tokens |
+| Gemini 3 Flash (Preview) | `gemini-3-flash-preview` | -     | -       | -       | 1M+ tokens |
+
+- RPM = Requests per minute, TPM = Tokens per minute, RPD = Requests per day
+- Rate limits apply per Google Cloud Project, not per API key
+- RPD quotas reset at midnight Pacific Time
+- No credit card required for free tier
+- Regional restrictions: Free tier unavailable for EU, UK, and Swiss users (paid tier required)
+- December 2025 saw 50-80% reductions across most free tier models
+
 ## Milestone 5: Vector Memory and Semantic Search
 
 **Goal**: Extend the agent's memory with vector embeddings for semantic retrieval beyond thread context.
@@ -268,6 +285,14 @@ This document outlines the engineering specification for a **Stateful AI Agent**
         - `vector search <QUERY>` - Perform similarity search and display results.
         - `vector embed <TEXT>` - Generate and display embedding for text.
         - `vector backfill` - Backfill embeddings for existing conversations.
+
+**Embedding API Rate Limits**:
+
+- Gemini Embedding (`gemini-embedding-001`) is available on the free tier
+- Free tier: Embedding model shares the same rate limit structure as generation models
+- Paid tier: $0.15 per 1M input tokens
+- Consider local embedding models (e.g., via `fastembed-rs`) for high-volume backfill operations to avoid hitting rate limits
+- Batch embedding requests where possible to maximize throughput within RPM constraints
 
 ## Milestone 6: The Control Deck (Web UI)
 

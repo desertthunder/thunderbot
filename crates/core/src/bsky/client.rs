@@ -1,11 +1,11 @@
 use super::types::*;
 use crate::db::{DatabaseRepository, SessionRow};
+
 use anyhow::Context;
 use chrono::Utc;
 use reqwest::Client;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
 
 const SESSION_FILE: &str = ".bsky_session.json";
 
@@ -28,7 +28,7 @@ impl BskyClient {
         if let Ok(content) = std::fs::read_to_string(SESSION_FILE)
             && let Ok(session) = serde_json::from_str::<Session>(&content)
         {
-            info!("Loaded session from file for: {}", session.handle);
+            tracing::info!("Loaded session from file for: {}", session.handle);
             return Some(session);
         }
         None
@@ -50,7 +50,7 @@ impl BskyClient {
             && let Ok(did) = self.resolve_handle(&handle).await
             && let Ok(Some(session_row)) = db.get_session(&did).await
         {
-            info!("Loaded session from database for: {}", session_row.handle);
+            tracing::info!("Loaded session from database for: {}", session_row.handle);
             return Some(Session {
                 did: session_row.did,
                 handle: session_row.handle,
@@ -72,22 +72,22 @@ impl BskyClient {
             };
 
             if let Err(e) = db.save_session(session_row).await {
-                warn!("Failed to save session to database: {}", e);
+                tracing::warn!("Failed to save session to database: {}", e);
             } else {
-                debug!("Saved session to database");
+                tracing::debug!("Saved session to database");
             }
         }
 
         let content = serde_json::to_string_pretty(session)?;
         std::fs::write(SESSION_FILE, content)?;
-        debug!("Saved session to file (fallback)");
+        tracing::debug!("Saved session to file (fallback)");
         Ok(())
     }
 
     pub async fn create_session(&self, identifier: &str, password: &str) -> anyhow::Result<Session> {
         let url = format!("{}/xrpc/com.atproto.server.createSession", self.pds_host);
 
-        debug!("Creating session for identifier: {}", identifier);
+        tracing::debug!("Creating session for identifier: {}", identifier);
 
         let response = self
             .client
@@ -105,9 +105,10 @@ impl BskyClient {
             *session_guard = Some(session.clone());
         }
 
-        info!(
+        tracing::info!(
             "Session created successfully for: {} (DID: {})",
-            session.handle, session.did
+            session.handle,
+            session.did
         );
 
         self.save_session(&session).await?;
@@ -126,7 +127,7 @@ impl BskyClient {
 
         let url = format!("{}/xrpc/com.atproto.server.refreshSession", self.pds_host);
 
-        debug!("Refreshing session");
+        tracing::debug!("Refreshing session");
 
         let response = self
             .client
@@ -144,7 +145,7 @@ impl BskyClient {
             *session_guard = Some(session.clone());
         }
 
-        info!("Session refreshed successfully");
+        tracing::info!("Session refreshed successfully");
 
         self.save_session(&session).await?;
 
@@ -188,7 +189,7 @@ impl BskyClient {
             record: serde_json::to_value(record)?,
         };
 
-        debug!("Creating post: {}", text);
+        tracing::debug!("Creating post: {}", text);
 
         let response = self
             .client
@@ -202,7 +203,7 @@ impl BskyClient {
 
         let result: CreateRecordResponse = response.json().await?;
 
-        info!("Post created: {}", result.uri);
+        tracing::info!("Post created: {}", result.uri);
 
         Ok(result)
     }
@@ -236,7 +237,7 @@ impl BskyClient {
             record: serde_json::to_value(record)?,
         };
 
-        debug!("Replying to post: {}", parent_uri);
+        tracing::debug!("Replying to post: {}", parent_uri);
 
         let response = self
             .client
@@ -250,7 +251,7 @@ impl BskyClient {
 
         let result: CreateRecordResponse = response.json().await?;
 
-        info!("Reply created: {}", result.uri);
+        tracing::info!("Reply created: {}", result.uri);
 
         Ok(result)
     }
@@ -277,7 +278,7 @@ impl BskyClient {
             self.pds_host, repo, collection, rkey
         );
 
-        debug!("Fetching post: {}", uri);
+        tracing::debug!("Fetching post: {}", uri);
 
         let response = self
             .client
@@ -297,7 +298,7 @@ impl BskyClient {
             self.pds_host, handle
         );
 
-        debug!("Resolving handle: {}", handle);
+        tracing::debug!("Resolving handle: {}", handle);
 
         let response: ResolveHandleResponse = self
             .client
@@ -314,7 +315,7 @@ impl BskyClient {
         if let Some(db) = &self.db
             && let Err(e) = db.cache_identity(&did, handle).await
         {
-            warn!("Failed to cache identity: {}", e);
+            tracing::warn!("Failed to cache identity: {}", e);
         }
 
         Ok(did)
@@ -323,7 +324,7 @@ impl BskyClient {
     pub async fn get_profile(&self, did: &str) -> anyhow::Result<GetProfileResponse> {
         let url = format!("{}/xrpc/app.bsky.actor.getProfile?actor={}", self.pds_host, did);
 
-        debug!("Fetching profile: {}", did);
+        tracing::debug!("Fetching profile: {}", did);
 
         let response = self
             .client
