@@ -1,0 +1,23 @@
+[package]
+name = "thunderbot-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "thunderbot"
+path = "src/main.rs"
+
+[dependencies]
+thunderbot-core = { path = "../core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+config = "0.15"
+dotenvy = "0.15"
+
+[lints]
+workspace = true

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = []
+members = ["crates/cli", "crates/core"]
+
+[workspace.dependencies]
+tokio = { version = "1.42", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+anyhow = "1.0"
 
 [workspace.lints.clippy]
 bool_comparison = "deny"
