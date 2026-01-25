@@ -61,6 +61,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: AiCommands,
     },
+    /// Vector memory operations
+    Vector {
+        #[command(subcommand)]
+        command: VectorCommands,
+    },
     /// Start the main daemon
     Serve,
     /// Show service status
@@ -169,4 +174,34 @@ pub enum ConfigCommands {
     Show,
     /// Validate configuration file
     Validate,
+}
+
+#[derive(Subcommand)]
+pub enum VectorCommands {
+    /// Show vector store statistics
+    Stats,
+    /// Perform similarity search
+    Search {
+        /// Search query text
+        query: String,
+        /// Number of results to return
+        #[arg(short, long, default_value = "5")]
+        top_k: usize,
+        /// Filter by author DID
+        #[arg(long)]
+        author_did: Option<String>,
+        /// Filter by role (user/model)
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Generate and display embedding for text
+    Embed {
+        /// Text to embed
+        text: String,
+    },
+    /// Backfill embeddings for existing conversations
+    Backfill {
+        /// Root URI of conversation to backfill
+        root_uri: String,
+    },
 }

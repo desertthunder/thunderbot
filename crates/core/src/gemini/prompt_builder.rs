@@ -1,11 +1,14 @@
 use super::types::*;
 use crate::db::{IdentityResolver, ThreadContextBuilder};
+
 use anyhow::Result;
+use std::sync::Arc;
 
 pub struct PromptBuilder {
     thread_builder: ThreadContextBuilder,
     identity_resolver: IdentityResolver,
     system_instruction: String,
+    rag_retriever: Option<Arc<crate::SemanticRetriever>>,
 }
 
 impl PromptBuilder {
@@ -18,15 +21,22 @@ impl PromptBuilder {
             thread_builder,
             identity_resolver,
             system_instruction: system_instruction.unwrap_or_else(|| Self::DEFAULT_SYSTEM_INSTRUCTION.to_string()),
+            rag_retriever: None,
         }
     }
 
+    pub fn with_rag(mut self, retriever: Arc<crate::SemanticRetriever>) -> Self {
+        self.rag_retriever = Some(retriever);
+        self
+    }
+
+    #[allow(clippy::cognitive_complexity)]
     pub async fn build_for_thread(&self, root_uri: &str) -> Result<Prompt> {
         let context = self.thread_builder.build(root_uri).await?;
 
         let mut history = Vec::new();
 
-        for msg in context.messages {
+        for msg in &context.messages {
             let handle = self
                 .identity_resolver
                 .resolve_did_to_handle(&msg.author_did)
@@ -39,7 +49,33 @@ impl PromptBuilder {
             history.push(ChatMessage { role: msg.role.clone(), content: formatted_content });
         }
 
-        Ok(Prompt { system_instruction: self.system_instruction.clone(), history })
+        let system_instruction = if let Some(retriever) = &self.rag_retriever {
+            let latest_message = context.messages.last().map(|m| m.content.as_str()).unwrap_or("");
+
+            tracing::debug!("Searching for RAG context based on latest message");
+
+            if let Ok(rag_context) = retriever.get_relevant_context(latest_message, Some(3)).await {
+                if !rag_context.is_empty() {
+                    let enhanced_system = format!(
+                        "{}\n\nRelevant context from past conversations:\n{}",
+                        self.system_instruction, rag_context
+                    );
+
+                    tracing::debug!("Enhanced prompt with RAG context");
+                    enhanced_system
+                } else {
+                    tracing::debug!("No RAG context found");
+                    self.system_instruction.clone()
+                }
+            } else {
+                tracing::debug!("RAG retrieval failed, using base system instruction");
+                self.system_instruction.clone()
+            }
+        } else {
+            self.system_instruction.clone()
+        };
+
+        Ok(Prompt { system_instruction, history })
     }
 
     pub fn build_for_text(&self, text: &str) -> Result<Prompt> {

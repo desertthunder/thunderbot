@@ -294,26 +294,78 @@ This document outlines the engineering specification for a **Stateful AI Agent**
 - Consider local embedding models (e.g., via `fastembed-rs`) for high-volume backfill operations to avoid hitting rate limits
 - Batch embedding requests where possible to maximize throughput within RPM constraints
 
-## Milestone 6: The Control Deck (Web UI)
+## Milestone 6: Unified Persistence (SQLite + sqlite-vec)
+
+**Goal**: Refactor the vector storage layer to use SQLite with the `sqlite-vec` extension, consolidating metadata and embeddings into a single unified database engine.
+
+**Definition of Done**:
+
+1. LanceDB dependency is removed from the project.
+2. All memory persistence and retrieval (Vector + FTS) is handled by SQLite/libSQL.
+3. Hybrid search (Semantic + Keyword) parity is achieved or improved.
+4. Existing LanceDB data is successfully migrated to the new SQLite schema.
+5. All vector-related CLI commands are updated and functional.
+
+**Tasks**:
+
+1. **Integrated Schema Design**
+    - **Requirements**:
+        - Extend the existing `bot.db` schema to include memory tables.
+        - Implement `vec0` virtual table for high-performance vector storage and retrieval.
+        - Implement FTS5 virtual table for keyword search on memory content.
+        - Design a unified repository that manages both metadata and embeddings.
+
+2. **sqlite-vec Integration**
+    - **Requirements**:
+        - Integrate `sqlite-vec` into the Rust build process (static linking or extension loading).
+        - Implement `SqliteVecStore` to replace `LanceDBStore`, satisfying the `VectorStore` trait.
+        - Optimize vector queries for performance (KNN search with `ORDER BY distance`).
+
+3. **Hybrid Search & Ranking**
+    - **Requirements**:
+        - Implement hybrid search logic in SQL or Rust.
+        - Use Reciprocal Rank Fusion (RRF) or similar ranking algorithms to blend FTS and Vector scores.
+        - Ensure search relevance matches or exceeds the current LanceDB implementation.
+
+4. **Data Migration Pipeline**
+    - **Requirements**:
+        - Create a one-time migration script/command to move data from `bot.lancedb` to `bot.db`.
+        - Verify data integrity and embedding correctness after migration.
+        - Clean up legacy LanceDB artifacts.
+
+5. **Cli & Integration Update**
+    - **Requirements**:
+        - Update `vector` CLI commands to target the new SQLite implementation.
+        - Ensure `MemoryConfig` is respected by the new store.
+        - Verify `SemanticRetriever` works seamlessly with the new backend.
+
+## Milestone 7: The Control Deck (Web UI)
 
 **Goal**: A lightweight, fast dashboard to monitor the bot's "brain" and state, using modern HTMX + Pico.
 
 **Definition of Done**:
 
-1. A web route `/dashboard` displays live stats of the bot.
-2. Admins can view the raw "Conversation Tables" and "Identity Maps".
-3. A "Manual Override" feature allowing the admin to post as the bot via the UI.
-4. Auth protection (Basic Auth or session-based) is active.
+1. Landing page `/` that explains the purpose and provides a link to the dashboard
+2. A web route `/dashboard` displays live stats of the bot.
+3. Admins can view the raw "Conversation Tables" and "Identity Maps".
+4. A "Manual Override" feature allowing the admin to post as the bot via the UI.
+5. Auth protection through BSky app password is active.
 
 **Tasks**:
 
 1. **HTMX + Pico Setup**
     - **Requirements**:
-        - Add `axum` or `actix-web` for HTTP routing (with feature flags for different runtimes).
+        - Add `axum` for HTTP routing (with feature flags for different runtimes).
         - Serve Pico CSS from CDN or embedded assets.
-        - Implement HTML templating using `askama` or `maud` crate.
+        - Implement HTML templating using `maud` crate.
         - Create the main layout: Sidebar (Status, Logs, Chat, Config) + Content Area.
         - Set up HTMX for checking server health/status every 5s (`hx-trigger="every 5s"`).
+
+    ```html
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.jade.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    ```
 
 2. **Live Status Dashboard**
     - **Requirements**:
@@ -336,7 +388,7 @@ This document outlines the engineering specification for a **Stateful AI Agent**
         - Implement a simple form to send a raw post (Broadcast) from the bot account.
         - Ensure all admin routes are behind authentication middleware.
 
-## Milestone 7: Deployment and Reliability
+## Milestone 8: Deployment and Reliability
 
 **Goal**: Harden the system for continuous operation with provider-agnostic deployment.
 

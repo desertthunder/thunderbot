@@ -25,3 +25,4 @@ target
 # Persistence
 *.db
 .bsky_session.json
+bot.lancedb/

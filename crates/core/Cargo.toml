@@ -9,7 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
-tokio-tungstenite = { version = "0.26", features = [
+tokio-tungstenite = { version = "0.28", features = [
     "rustls-tls-native-roots",
     "native-tls",
 ] }
@@ -17,11 +17,18 @@ async-compression = { version = "0.4", features = ["zstd", "tokio"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 zstd = "0.13"
-rand = "0.8"
-libsql = "0.5"
+rand = "0.9"
+libsql = "0.9"
+tokio-rusqlite = { version = "0.7", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
+sqlite-vec = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.15"
 
 [lints]
 workspace = true

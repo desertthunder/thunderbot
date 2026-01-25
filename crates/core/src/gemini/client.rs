@@ -3,7 +3,6 @@ use super::types::*;
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use std::time::Duration;
-use tracing::{debug, info, warn};
 
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models/";
 const MAX_RETRIES: u32 = 3;
@@ -39,14 +38,14 @@ impl GeminiClient {
     pub async fn generate_content(&self, request: GenerateContentRequest) -> Result<String> {
         let url = format!("{}{}:generateContent?key={}", GEMINI_API_BASE, self.model, self.api_key);
 
-        debug!("Calling Gemini API with model: {}", self.model);
+        tracing::debug!("Calling Gemini API with model: {}", self.model);
 
         let mut last_error = None;
 
         for attempt in 1..=MAX_RETRIES {
             if attempt > 1 {
                 let backoff = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
-                warn!("Retry attempt {} after {:?}", attempt, backoff);
+                tracing::warn!("Retry attempt {} after {:?}", attempt, backoff);
                 tokio::time::sleep(backoff).await;
             }
 
@@ -71,9 +70,11 @@ impl GeminiClient {
                                 .context("Failed to extract text from response")?;
 
                             if let Some(usage) = &gemini_response.usage_metadata {
-                                info!(
+                                tracing::info!(
                                     "Tokens: {} prompt, {} candidates, {} total",
-                                    usage.prompt_token_count, usage.candidates_token_count, usage.total_token_count
+                                    usage.prompt_token_count,
+                                    usage.candidates_token_count,
+                                    usage.total_token_count
                                 );
                             }
 

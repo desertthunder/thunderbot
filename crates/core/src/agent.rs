@@ -12,6 +12,7 @@ pub struct Agent {
     db: Db,
     own_did: String,
     system_instruction: Option<String>,
+    rag_retriever: Option<Arc<crate::SemanticRetriever>>,
 }
 
 impl Agent {
@@ -19,7 +20,7 @@ impl Agent {
         gemini_client: GeminiClient, bsky_client: Arc<BskyClient>, db: Db, own_did: String,
         system_instruction: Option<String>,
     ) -> Self {
-        Self { gemini_client, bsky_client, db, own_did, system_instruction }
+        Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None }
     }
 
     pub fn from_clients(
@@ -27,11 +28,16 @@ impl Agent {
     ) -> Result<Self> {
         let gemini_client = GeminiClient::from_env()?;
 
-        Ok(Self { gemini_client, bsky_client, db, own_did, system_instruction })
+        Ok(Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None })
+    }
+
+    pub fn with_rag(mut self, retriever: Arc<crate::SemanticRetriever>) -> Self {
+        self.rag_retriever = Some(retriever);
+        self
     }
 
     #[allow(clippy::cognitive_complexity)]
-    pub async fn process_mention(&self, post_uri: &str, text: &str) -> Result<()> {
+    pub async fn process_mention(&self, post_uri: &str, _: &str) -> Result<()> {
         let post = self
             .bsky_client
             .get_post(post_uri)
@@ -71,7 +77,11 @@ impl Agent {
 
         let thread_builder = ThreadContextBuilder::new(self.db.clone());
         let identity_resolver = IdentityResolver::new(self.db.clone(), IdentityResolverConfig::default());
-        let prompt_builder = PromptBuilder::new(thread_builder, identity_resolver, self.system_instruction.clone());
+        let mut prompt_builder = PromptBuilder::new(thread_builder, identity_resolver, self.system_instruction.clone());
+
+        if let Some(retriever) = &self.rag_retriever {
+            prompt_builder = prompt_builder.with_rag(retriever.clone());
+        }
 
         let prompt = prompt_builder
             .build_for_thread(root_uri)
@@ -95,7 +105,7 @@ impl Agent {
         }
 
         tracing::debug!("Posting reply to Bluesky...");
-        self.post_with_retry(text, post_uri, parent_cid, root_uri, root_cid)
+        self.post_with_retry(&response, post_uri, parent_cid, root_uri, root_cid)
             .await?;
 
         let bot_conversation = ConversationRow {
@@ -121,7 +131,11 @@ impl Agent {
     pub async fn simulate_response(&self, post_uri: &str) -> Result<String> {
         let thread_builder = ThreadContextBuilder::new(self.db.clone());
         let identity_resolver = IdentityResolver::new(self.db.clone(), IdentityResolverConfig::default());
-        let prompt_builder = PromptBuilder::new(thread_builder, identity_resolver, self.system_instruction.clone());
+        let mut prompt_builder = PromptBuilder::new(thread_builder, identity_resolver, self.system_instruction.clone());
+
+        if let Some(retriever) = &self.rag_retriever {
+            prompt_builder = prompt_builder.with_rag(retriever.clone());
+        }
 
         let post = self
             .bsky_client

@@ -2,7 +2,11 @@ use crate::cli::{self, Cli, Commands, JetstreamCommands};
 use crate::echo;
 use anyhow::Context;
 
+use std::sync::Arc;
+use thunderbot_core::BskyClient;
 use thunderbot_core::jetstream;
+use thunderbot_core::{Agent, IdentityResolver, IdentityResolverConfig, LibsqlRepository, ThreadContextBuilder};
+use thunderbot_core::{DatabaseRepository, VectorStore};
 
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -10,6 +14,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Bsky { ref command } => handle_bsky(command).await,
         Commands::Db { ref command } => handle_db(command).await,
         Commands::Ai { ref command } => handle_ai(command).await,
+        Commands::Vector { ref command } => handle_vector(command).await,
         Commands::Serve => handle_serve().await,
         Commands::Status => handle_status().await,
         Commands::Config { ref command } => handle_config(command).await,
@@ -33,11 +38,8 @@ async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use thunderbot_core::BskyClient;
-
-    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
 
     let client = BskyClient::new(&pds_host, Some(repo));
@@ -146,9 +148,6 @@ async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use thunderbot_core::{DatabaseRepository, LibsqlRepository, ThreadContextBuilder};
-
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
 
@@ -198,13 +197,8 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
 }
 
 async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use thunderbot_core::{
-        Agent, BskyClient, IdentityResolver, IdentityResolverConfig, LibsqlRepository, ThreadContextBuilder,
-    };
-
-    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
 
     let bsky_client = Arc::new(BskyClient::new(&pds_host, Some(repo.clone())));
@@ -294,6 +288,109 @@ async fn handle_config(command: &cli::ConfigCommands) -> anyhow::Result<()> {
         }
         cli::ConfigCommands::Validate => {
             echo::warn("Config validate command not yet implemented");
+            Ok(())
+        }
+    }
+}
+
+async fn handle_vector(command: &cli::VectorCommands) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use thunderbot_core::{
+        EmbeddingProvider, GeminiEmbeddingProvider, LibsqlRepository, MemoryConfig, SearchFilter, SemanticRetriever,
+        SqliteVecStore,
+    };
+
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    let vector_db_url = std::env::var("VECTOR_DB_URL").unwrap_or_else(|_| "./bot_vectors.db".to_string());
+
+    match command {
+        cli::VectorCommands::Stats => {
+            let vector_store = Arc::new(SqliteVecStore::new(&vector_db_url, MemoryConfig::default()).await?);
+            let stats = vector_store.get_stats().await?;
+
+            echo::header("Vector Store Statistics");
+            println!("  Total memories: {}", stats.total_memories);
+            println!("  Unique conversations: {}", stats.unique_conversations);
+            println!("  Oldest memory: {:?}", stats.oldest_memory);
+            println!("  Newest memory: {:?}", stats.newest_memory);
+            println!("  By role:");
+            for (role, count) in stats.by_role {
+                println!("    {}: {}", role, count);
+            }
+
+            Ok(())
+        }
+        cli::VectorCommands::Search { query, top_k, author_did, role } => {
+            let vector_store = Arc::new(SqliteVecStore::new(&vector_db_url, MemoryConfig::default()).await?);
+            let embedding_provider = Arc::new(GeminiEmbeddingProvider::from_env()?);
+            let retriever = SemanticRetriever::new(vector_store, embedding_provider, MemoryConfig::default());
+
+            let filter = SearchFilter {
+                author_did: author_did.clone(),
+                role: role.clone(),
+                start_time: None,
+                end_time: None,
+                min_score: Some(0.6),
+            };
+
+            let results = retriever.search_memories(query, Some(*top_k), Some(filter)).await?;
+
+            echo::header(&format!("Search Results for: {}", query));
+            if results.is_empty() {
+                echo::info("No results found");
+            } else {
+                for (i, result) in results.iter().enumerate() {
+                    println!(
+                        "  {}. [Score: {:.3}] [{}]",
+                        i + 1,
+                        result.score,
+                        result.memory.metadata.role
+                    );
+                    println!("     Author: {}", result.memory.metadata.author_did);
+                    println!("     Content: {}", result.memory.content);
+                    println!("     Created: {}", result.memory.created_at);
+                    if i < results.len() - 1 {
+                        println!();
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        cli::VectorCommands::Embed { text } => {
+            let embedding_provider = GeminiEmbeddingProvider::from_env()?;
+
+            echo::info(&format!("Generating embedding for text ({} chars)", text.len()));
+
+            let embedding = embedding_provider.embed(text).await?;
+
+            echo::success("Embedding generated");
+            println!("  Dimensions: {}", embedding.len());
+            println!("  First 5 values: {:?}", &embedding[..embedding.len().min(5)]);
+            println!("  Last 5 values: {:?}", &embedding[embedding.len().saturating_sub(5)..]);
+
+            Ok(())
+        }
+        cli::VectorCommands::Backfill { root_uri } => {
+            let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
+
+            let vector_store = Arc::new(SqliteVecStore::new(&vector_db_url, MemoryConfig::default()).await?);
+            let embedding_provider = Arc::new(GeminiEmbeddingProvider::from_env()?);
+            let retriever = SemanticRetriever::new(vector_store, embedding_provider, MemoryConfig::default());
+
+            let history = repo.get_thread_history(root_uri).await?;
+
+            echo::info(&format!("Found {} messages in conversation", history.len()));
+
+            let messages: Vec<(String, String, String)> = history
+                .into_iter()
+                .map(|row| (row.content, row.author_did, row.role))
+                .collect();
+
+            let added = retriever.backfill_conversation(root_uri, &messages).await?;
+
+            echo::success(&format!("Backfilled {} memories for conversation", added));
+
             Ok(())
         }
     }
