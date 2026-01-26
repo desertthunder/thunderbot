@@ -26,3 +26,4 @@ target
 *.db
 .bsky_session.json
 bot.lancedb/
+AGENTS.md

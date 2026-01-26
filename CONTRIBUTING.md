@@ -1,6 +1,6 @@
-# AGENTS.md
+# CONTRIBUTING
 
-ThunderBot: Stateful AI agent for Bluesky (AT Protocol) built in Rust.
+Contributing guidelines for ThunderBot, a Stateful AI agent for Bluesky (AT Protocol) built in Rust.
 
 ## Project Overview
 
@@ -143,7 +143,3 @@ tokio, reqwest, libsql, lancedb, tokio-tungstenite, clap, serde, tracing, anyhow
 ## Workspace Config
 
 Resolver v2, shared dependencies in root `Cargo.toml`, workspace Clippy lints configured. `rustfmt.toml`: max_width=120, compressed params, field init shorthand.
-
-## Testing
-
-No test suite exists. Run with `cargo test` when adding tests.
