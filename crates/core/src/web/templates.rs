@@ -174,6 +174,66 @@ pub fn base_layout(title: &str, section: &PageSection, content: &Markup, handle:
                             background: #ff9800;
                             color: white;
                         }
+                        .health-grid {
+                            display: grid;
+                            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                            gap: 1rem;
+                            margin-top: 1rem;
+                        }
+                        .health-card {
+                            padding: 1rem;
+                            border-radius: 0.25rem;
+                            background: white;
+                            border: 1px solid #ddd;
+                            min-height: 100px;
+                        }
+                        .health-card.healthy {
+                            border-left: 4px solid #4caf50;
+                        }
+                        .health-card.degraded {
+                            border-left: 4px solid #ff9800;
+                            background: #fff8e1;
+                        }
+                        .health-card.unhealthy {
+                            border-left: 4px solid #f44336;
+                            background: #ffebee;
+                        }
+                        .health-card-header {
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            margin-bottom: 0.5rem;
+                            font-weight: bold;
+                        }
+                        .health-status {
+                            font-size: 0.8rem;
+                            padding: 0.25rem 0.5rem;
+                            border-radius: 0.25rem;
+                        }
+                        .health-card.healthy .health-status {
+                            background: #e8f5e9;
+                            color: #2e7d32;
+                        }
+                        .health-card.degraded .health-status {
+                            background: #fff3e0;
+                            color: #e65100;
+                        }
+                        .health-card.unhealthy .health-status {
+                            background: #ffebee;
+                            color: #c62828;
+                        }
+                        .health-card-body {
+                            margin: 0.5rem 0;
+                            font-size: 0.9rem;
+                        }
+                        .health-card-body small.error {
+                            color: #c62828;
+                        }
+                        .health-card-footer {
+                            margin-top: 0.5rem;
+                            font-size: 0.8rem;
+                            color: #666;
+                        }
                     "#))
                 }
             }
@@ -360,13 +420,14 @@ pub fn dashboard_page(stats: &DashboardStats) -> Markup {
                 }
             }
             div style="margin: 2rem 0;" {
-                h3 { "Connection Status" }
-                div id="connection-status"
-                    hx-get="/api/status"
+                h3 { "Component Health" }
+                div id="health-cards"
+                    hx-get="/api/health"
                     hx-trigger="load, every 5s"
-                    hx-swap="innerHTML" {
+                    hx-swap="innerHTML"
+                    style="margin-top: 1rem;" {
                         small { "Loading..." }
-                }
+                    }
             }
         },
         "",

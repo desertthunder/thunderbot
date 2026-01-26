@@ -1,8 +1,13 @@
 use crate::bsky::BskyClient;
 use crate::db::DatabaseRepository;
-use crate::web::{ReplyContext, UserClient};
+use crate::health::{
+    ComponentHealth, DatabaseHealthCheck, HealthCheck, HealthRegistry, HealthStatus, JetstreamHealthCheck,
+    JetstreamState,
+};
 use crate::web::cookies::{SessionCookie, UserSession, clear_session_cookie, set_session_cookie};
 use crate::web::templates::DashboardStats;
+use crate::web::{ReplyContext, UserClient};
+
 use anyhow::Result;
 use axum::{
     Form,
@@ -20,6 +25,8 @@ use std::sync::Arc;
 pub struct WebAppState {
     pub db: Arc<dyn DatabaseRepository>,
     pub bsky_client: Arc<BskyClient>,
+    pub health: Arc<HealthRegistry>,
+    pub jetstream_state: Arc<tokio::sync::RwLock<JetstreamState>>,
 }
 
 #[derive(Deserialize)]
@@ -199,16 +206,55 @@ pub async fn post_resume() -> impl IntoResponse {
 }
 
 pub async fn post_clear_thread(
-    State(_state): State<WebAppState>, Form(form): Form<ClearThreadForm>,
+    State(_): State<WebAppState>, Form(form): Form<ClearThreadForm>,
 ) -> Result<Response, StatusCode> {
     tracing::info!("Clearing thread context: {}", form.root_uri);
     Ok(StatusCode::OK.into_response())
 }
 
-pub async fn get_status() -> impl IntoResponse {
+pub async fn get_status(State(state): State<WebAppState>) -> impl IntoResponse {
+    let version = env!("CARGO_PKG_VERSION");
+    let report = state.health.generate_report(version.to_string()).await;
+
     Html(
         maud::html! {
-            small { "Last event: " (chrono::Utc::now().to_rfc3339()) }
+            div.health-grid {
+                @for (component, health) in report.checks.iter() {
+                    @let status_class = match health.status {
+                        HealthStatus::Pass => "healthy",
+                        HealthStatus::Warn => "degraded",
+                        HealthStatus::Fail => "unhealthy",
+                    };
+
+                    @let status_emoji = match health.status {
+                        HealthStatus::Pass => "✓",
+                        HealthStatus::Warn => "⚠",
+                        HealthStatus::Fail => "✗",
+                    };
+
+                    div.health-card.(status_class) {
+                        div.health-card-header {
+                            strong { (component) }
+                            span.health-status { (status_emoji) " " (format!("{:?}", health.status).to_lowercase()) }
+                        }
+                        @if let Some(output) = &health.output {
+                            div.health-card-body {
+                                small { (output) }
+                            }
+                        }
+                        @if let Some(error) = &health.error {
+                            div.health-card-body {
+                                small class="error" { (error) }
+                            }
+                        }
+                        @if health.observed_value > 0 {
+                            div.health-card-footer {
+                                small { "Latency: " (health.observed_value) "ms" }
+                            }
+                        }
+                    }
+                }
+            }
         }
         .into_string(),
     )
@@ -218,7 +264,6 @@ pub async fn get_login() -> impl IntoResponse {
     Html(super::templates::login_page().into_string())
 }
 
-#[allow(clippy::cognitive_complexity)]
 pub async fn post_login(State(state): State<WebAppState>, Form(form): Form<LoginForm>) -> Result<Response, StatusCode> {
     if let Err(e) = check_allowed_handle(&form.handle) {
         tracing::error!("Handle check failed: {}", e);
@@ -248,7 +293,7 @@ pub async fn post_login(State(state): State<WebAppState>, Form(form): Form<Login
     }
 
     let mut response = Redirect::to("/chat").into_response();
-    for (_name, value) in cookies {
+    for (_, value) in cookies {
         if let Err(e) = value.parse::<axum::http::HeaderValue>() {
             tracing::error!("Invalid cookie header: {}", e);
             continue;
@@ -267,7 +312,7 @@ pub async fn post_logout() -> impl IntoResponse {
     clear_session_cookie(&mut cookies);
 
     let mut response = Redirect::to("/").into_response();
-    for (_name, value) in cookies {
+    for (_, value) in cookies {
         if let Err(e) = value.parse::<axum::http::HeaderValue>() {
             tracing::error!("Invalid cookie header: {}", e);
             continue;
@@ -302,7 +347,6 @@ pub async fn get_chat(State(state): State<WebAppState>, headers: HeaderMap) -> R
     }
 }
 
-#[allow(clippy::cognitive_complexity)]
 pub async fn post_chat_send(
     State(state): State<WebAppState>, headers: HeaderMap, Form(form): Form<ChatMessageForm>,
 ) -> Result<Response, StatusCode> {
@@ -342,51 +386,49 @@ pub async fn post_chat_send(
             .find(|row| !row.post_uri.is_empty())
             .map(|row| row.post_uri.clone());
 
-        if let Some(parent_uri) = parent_uri {
-            let parent_post = match state.bsky_client.get_post(&parent_uri).await {
-                Ok(post) => post,
-                Err(e) => {
-                    tracing::error!("Failed to load parent post: {}", e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            };
+        match parent_uri {
+            Some(p_uri) => {
+                let parent_post = match state.bsky_client.get_post(&p_uri).await {
+                    Ok(post) => post,
+                    Err(e) => {
+                        tracing::error!("Failed to load parent post: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                };
 
-            let root_post = match state.bsky_client.get_post(thread_uri).await {
-                Ok(post) => post,
-                Err(e) => {
-                    tracing::error!("Failed to load root post: {}", e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            };
+                let root_post = match state.bsky_client.get_post(thread_uri).await {
+                    Ok(post) => post,
+                    Err(e) => {
+                        tracing::error!("Failed to load root post: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                };
 
-            let reply_context = ReplyContext {
-                text: form.text.clone(),
-                parent_uri: parent_post.uri.clone(),
-                parent_cid: parent_post.cid.clone(),
-                root_uri: root_post.uri.clone(),
-                root_cid: root_post.cid.clone(),
-                bot_did,
-                bot_handle,
-            };
+                let reply_context = ReplyContext {
+                    text: form.text.clone(),
+                    parent_uri: parent_post.uri.clone(),
+                    parent_cid: parent_post.cid.clone(),
+                    root_uri: root_post.uri.clone(),
+                    root_cid: root_post.cid.clone(),
+                    bot_did,
+                    bot_handle,
+                };
 
-            match user_client
-                .create_reply(&reply_context)
-                .await
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::error!("Failed to create reply: {}", e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                match user_client.create_reply(&reply_context).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        tracing::error!("Failed to create reply: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
                 }
             }
-        } else {
-            match user_client.create_post(&form.text, &bot_did, &bot_handle).await {
+            None => match user_client.create_post(&form.text, &bot_did, &bot_handle).await {
                 Ok(result) => result,
                 Err(e) => {
                     tracing::error!("Failed to create post: {}", e);
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
-            }
+            },
         }
     } else {
         match user_client.create_post(&form.text, &bot_did, &bot_handle).await {
@@ -401,4 +443,54 @@ pub async fn post_chat_send(
     tracing::info!("Posted as {}: {}", session.handle, post_result.uri);
 
     Ok(Redirect::to("/chat").into_response())
+}
+
+pub async fn get_health(State(state): State<WebAppState>) -> Response {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let mut report = state.health.generate_report(version).await;
+
+    match DatabaseHealthCheck::new(state.db.clone()).check().await {
+        Ok(health) => report = report.with_check("database", health),
+        Err(e) => {
+            report = report.with_check("database", ComponentHealth::unhealthy("database", e.to_string()));
+        }
+    }
+
+    match JetstreamHealthCheck::new(state.jetstream_state.clone()).check().await {
+        Ok(health) => report = report.with_check("jetstream", health),
+        Err(e) => report = report.with_check("jetstream", ComponentHealth::unhealthy("jetstream", e.to_string())),
+    }
+
+    let status_code = report.http_status();
+    let body = serde_json::to_vec(&report).unwrap();
+
+    axum::response::Response::builder()
+        .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::SERVICE_UNAVAILABLE))
+        .header("Content-Type", "application/health+json")
+        .header("Cache-Control", "max-age=5")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            axum::response::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::from("Internal error"))
+                .unwrap()
+        })
+}
+
+pub async fn get_metrics() -> Response {
+    let version = env!("CARGO_PKG_VERSION");
+    let metrics = crate::metrics::Metrics::new();
+    let prometheus_output = metrics.render_prometheus(version).await;
+    let body = prometheus_output.into_bytes();
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            axum::response::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::from("Internal error"))
+                .unwrap()
+        })
 }

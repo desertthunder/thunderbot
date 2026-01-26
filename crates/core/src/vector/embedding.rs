@@ -40,6 +40,7 @@ struct GeminiError {
 
 #[derive(Debug, Deserialize)]
 struct GeminiErrorDetail {
+    /// TODO: use or remove
     _code: i32,
     message: String,
     status: String,
@@ -65,11 +66,9 @@ impl GeminiEmbeddingProvider {
 
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("GEMINI_API_KEY").context("GEMINI_API_KEY environment variable not set")?;
-
         Self::new(api_key)
     }
 
-    #[allow(clippy::cognitive_complexity)]
     async fn make_request(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!(
             "{}{}:embedContent?key={}",

@@ -4,7 +4,6 @@ use crate::processor::EventProcessor;
 
 use std::sync::Arc;
 
-#[allow(clippy::cognitive_complexity)]
 pub async fn listen(filter_did: Option<String>, duration: Option<u64>) -> anyhow::Result<()> {
     let client = JetstreamClient::new();
     let filter = JetstreamFilter::new(filter_did);

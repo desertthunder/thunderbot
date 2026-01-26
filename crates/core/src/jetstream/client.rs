@@ -45,7 +45,6 @@ pub struct WebSocketStream {
 pub type SplitStream = futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>>;
 
 impl WebSocketStream {
-    #[allow(clippy::cognitive_complexity)]
     pub async fn next_event(&mut self) -> Result<Option<JetstreamEvent>> {
         match self.read.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str::<JetstreamEvent>(&text) {

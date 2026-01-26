@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use owo_colors::OwoColorize;
 
 pub fn success(msg: &str) {
@@ -19,4 +18,9 @@ pub fn warn(msg: &str) {
 
 pub fn header(msg: &str) {
     println!("\n{}\n", msg.bold().cyan());
+}
+
+pub fn ok(msg: &str) -> anyhow::Result<()> {
+    success(msg);
+    Ok(())
 }

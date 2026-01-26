@@ -2899,6 +2899,7 @@ dependencies = [
  "config",
  "dotenvy",
  "owo-colors",
+ "reqwest",
  "serde",
  "serde_json",
  "thunderbot-core",

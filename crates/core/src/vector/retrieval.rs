@@ -115,7 +115,6 @@ impl SemanticRetriever {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub async fn search_memories(
         &self, query: &str, top_k: Option<usize>, filter: Option<SearchFilter>,
     ) -> Result<Vec<MemoryWithScore>> {
@@ -221,7 +220,6 @@ impl SemanticRetriever {
 
         let deleted = VectorStore::delete_old_memories(&*self.vector_store, older_than).await?;
         tracing::info!("Deleted {} old memories", deleted);
-
         Ok(deleted)
     }
 

@@ -5,6 +5,7 @@ members = ["crates/cli", "crates/core"]
 [workspace.dependencies]
 tokio = { version = "1.42", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1.0"
 tracing = "0.1"
 anyhow = "1.0"
@@ -25,7 +26,6 @@ cmp_owned = "deny"
 cmp_null = "deny"
 manual_map = "deny"
 too_many_arguments = "warn"
-cognitive_complexity = "warn"
 large_enum_variant = "warn"
 needless_borrow = "warn"
 needless_pass_by_value = "warn"
@@ -41,3 +41,5 @@ vec_init_then_push = "warn"
 len_zero = "allow"
 range_plus_one = "allow"
 manual_range_contains = "allow"
+# False positives with tracing calls
+cognitive_complexity = "allow"

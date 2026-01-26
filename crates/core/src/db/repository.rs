@@ -46,6 +46,7 @@ pub trait DatabaseRepository: Send + Sync {
     async fn save_session(&self, row: SessionRow) -> Result<()>;
     async fn get_session(&self, did: &str) -> Result<Option<SessionRow>>;
     async fn get_stats(&self) -> Result<DatabaseStats>;
+    async fn ping(&self) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,6 +344,18 @@ impl DatabaseRepository for LibsqlRepository {
             .await?;
 
         Ok(rows.into_iter().next())
+    }
+
+    async fn ping(&self) -> Result<()> {
+        let sql = "SELECT 1";
+        let conn = self.db.connect()?;
+        let mut rows = conn.query(sql, ()).await?;
+        let first = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Database ping failed"))?;
+        first.get::<i32>(0)?;
+        Ok(())
     }
 }
 

@@ -28,13 +28,10 @@ impl GeminiClient {
 
     pub fn from_env() -> Result<Self> {
         let api_key = std::env::var("GEMINI_API_KEY").context("GEMINI_API_KEY environment variable not set")?;
-
         let model = std::env::var("GEMINI_MODEL").ok();
-
         Ok(Self::new(api_key, model))
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub async fn generate_content(&self, request: GenerateContentRequest) -> Result<String> {
         let url = format!("{}{}:generateContent?key={}", GEMINI_API_BASE, self.model, self.api_key);
 
@@ -165,12 +162,10 @@ mod tests {
     #[test]
     fn test_extract_text_from_parts() {
         let client = GeminiClient::new("test-key".to_string(), None);
-
         let parts = vec![
             Part::Text { text: "Hello".to_string() },
             Part::Text { text: "World".to_string() },
         ];
-
         let text = client.extract_text_from_parts(&parts).unwrap();
         assert_eq!(text, "Hello\nWorld");
     }
@@ -178,7 +173,6 @@ mod tests {
     #[test]
     fn test_extract_text_from_empty_parts() {
         let client = GeminiClient::new("test-key".to_string(), None);
-
         let parts = vec![];
         let result = client.extract_text_from_parts(&parts);
         assert!(result.is_err());

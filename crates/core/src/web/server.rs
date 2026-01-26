@@ -1,10 +1,13 @@
 use crate::bsky::BskyClient;
 use crate::db::DatabaseRepository;
+use crate::health::{HealthRegistry, JetstreamState};
+use crate::web::handlers::get_metrics;
 use crate::web::handlers::{
-    WebAppState, get_admin, get_chat, get_config, get_dashboard, get_identities, get_landing, get_login, get_status,
-    get_thread_detail, get_threads, post_chat_send, post_clear_thread, post_login, post_logout, post_pause, post_post,
-    post_resume,
+    WebAppState, get_admin, get_chat, get_config, get_dashboard, get_health, get_identities, get_landing, get_login,
+    get_status, get_thread_detail, get_threads, post_chat_send, post_clear_thread, post_login, post_logout, post_pause,
+    post_post, post_resume,
 };
+
 use anyhow::Result;
 use axum::Router;
 use axum::routing::{get, post};
@@ -19,8 +22,13 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(db: Arc<dyn DatabaseRepository>, bsky_client: Arc<BskyClient>) -> Self {
-        Self { app_state: WebAppState { db, bsky_client }, address: "127.0.0.1".to_string(), port: 3000 }
+    pub fn new(db: Arc<dyn DatabaseRepository>, bsky_client: Arc<BskyClient>, health: Arc<HealthRegistry>) -> Self {
+        let jetstream_state = Arc::new(tokio::sync::RwLock::new(JetstreamState::new()));
+        Self {
+            app_state: WebAppState { db, bsky_client, health, jetstream_state },
+            address: "127.0.0.1".to_string(),
+            port: 3000,
+        }
     }
 
     pub fn with_address(mut self, address: impl Into<String>) -> Self {
@@ -46,6 +54,8 @@ impl Server {
             .route("/admin", get(get_admin))
             .route("/config", get(get_config))
             .route("/api/status", get(get_status))
+            .route("/api/health", get(get_health))
+            .route("/api/metrics", get(get_metrics))
             .route("/api/post", post(post_post))
             .route("/api/pause", post(post_pause))
             .route("/api/resume", post(post_resume))
@@ -62,9 +72,7 @@ impl Server {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!("Web server listening on http://{}", addr);
-
         axum::serve(listener, app).await?;
-
         Ok(())
     }
 }

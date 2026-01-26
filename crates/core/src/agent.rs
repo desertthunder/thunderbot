@@ -1,6 +1,7 @@
 use super::bsky::BskyClient;
 use super::db::{ConversationRow, Db, IdentityResolver, IdentityResolverConfig, ThreadContextBuilder};
 use super::gemini::{GeminiClient, PromptBuilder};
+
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::sync::Arc;
@@ -36,7 +37,6 @@ impl Agent {
         self
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub async fn process_mention(&self, post_uri: &str, _: &str) -> Result<()> {
         let post = self
             .bsky_client

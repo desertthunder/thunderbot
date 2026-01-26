@@ -12,7 +12,11 @@ pub struct PromptBuilder {
 }
 
 impl PromptBuilder {
-    const DEFAULT_SYSTEM_INSTRUCTION: &'static str = "You are a helpful, stateful AI agent on Bluesky. You are persistent, friendly, and engage in meaningful conversations. Keep your responses concise (under 280 characters when possible). If you choose not to respond, use <SILENT_THOUGHT> as your entire response.";
+    /// TODO: Make this configurable or load from a file
+    const DEFAULT_SYSTEM_INSTRUCTION: &'static str = r#"You are a helpful, stateful AI agent on Bluesky.
+    You are persistent, friendly, and engage in meaningful conversations.
+    Keep your responses concise (under 280 characters when possible).
+    If you choose not to respond, use <SILENT_THOUGHT> as your entire response."#;
 
     pub fn new(
         thread_builder: ThreadContextBuilder, identity_resolver: IdentityResolver, system_instruction: Option<String>,
@@ -30,7 +34,6 @@ impl PromptBuilder {
         self
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub async fn build_for_thread(&self, root_uri: &str) -> Result<Prompt> {
         let context = self.thread_builder.build(root_uri).await?;
 

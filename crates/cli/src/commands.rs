@@ -1,7 +1,8 @@
 use crate::cli::{self, Cli, Commands, JetstreamCommands};
 use crate::echo;
-use anyhow::Context;
 
+use anyhow::Context;
+use reqwest::Client;
 use std::sync::Arc;
 use thunderbot_core::BskyClient;
 use thunderbot_core::jetstream;
@@ -16,12 +17,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Ai { ref command } => handle_ai(command).await,
         Commands::Vector { ref command } => handle_vector(command).await,
         Commands::Serve => handle_serve().await,
-        Commands::Status => handle_status().await,
+        Commands::Status => handle_status(&cli).await,
         Commands::Config { ref command } => handle_config(command).await,
     }
 }
 
-#[allow(clippy::cognitive_complexity)]
 async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
     match command {
         JetstreamCommands::Listen { filter_did, duration } => {
@@ -282,7 +282,8 @@ async fn handle_serve() -> anyhow::Result<()> {
 
     bsky_client.load_from_database().await;
 
-    let server = thunderbot_core::Server::new(repo, bsky_client);
+    let health = Arc::new(thunderbot_core::HealthRegistry::new());
+    let server = thunderbot_core::Server::new(repo, bsky_client, health);
 
     echo::success("Web server starting on http://127.0.0.1:3000");
     echo::info("Use the following Authorization header:");
@@ -291,21 +292,202 @@ async fn handle_serve() -> anyhow::Result<()> {
     server.serve().await
 }
 
-async fn handle_status() -> anyhow::Result<()> {
-    echo::warn("Status command not yet implemented");
+async fn handle_status(cli: &Cli) -> anyhow::Result<()> {
+    let server_url = std::env::var("SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+    let health_url = format!("{}/api/health", server_url);
+
+    let client = Client::new();
+    let response = match client.get(&health_url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            echo::error(&format!("Failed to connect to server at {}", server_url));
+            echo::info("Make sure the server is running with: thunderbot serve");
+            return Err(e.into());
+        }
+    };
+
+    let status = response.status();
+    if cli.format == cli::OutputFormat::Json {
+        let body = response.text().await?;
+        println!("{}", body);
+        if status.is_success() {
+            return Ok(());
+        } else {
+            anyhow::bail!("Health check failed with status: {}", status);
+        }
+    }
+
+    let health_json: serde_json::Value = response.json().await?;
+    let overall_status = health_json["status"].as_str().unwrap_or("unknown");
+    let version = health_json["version"].as_str().unwrap_or("unknown");
+
+    echo::header("ThunderBot Status");
+    println!("  Version: {}", version);
+    println!("  Status: {}", overall_status);
+
+    if let Some(checks) = health_json["checks"].as_object() {
+        for (component, check) in checks {
+            let status = check["status"].as_str().unwrap_or("unknown");
+            let output = check["output"].as_str().unwrap_or("");
+            let error = check["error"].as_str().unwrap_or("");
+            let latency = check["observedValue"].as_i64().unwrap_or(0);
+
+            let status_emoji = match status {
+                "pass" => "✓",
+                "warn" => "⚠",
+                "fail" => "✗",
+                _ => "?",
+            };
+
+            echo::info(&format!("{} {}: {}", status_emoji, component, status));
+
+            if !output.is_empty() {
+                println!("    Output: {}", output);
+            }
+            if !error.is_empty() {
+                echo::error(&format!("    Error: {}", error));
+            }
+            if latency > 0 {
+                println!("    Latency: {}ms", latency);
+            }
+        }
+    }
+
+    if !status.is_success() {
+        anyhow::bail!("Health check failed");
+    }
+
     Ok(())
 }
 
 async fn handle_config(command: &cli::ConfigCommands) -> anyhow::Result<()> {
     match command {
-        cli::ConfigCommands::Show => {
-            echo::warn("Config show command not yet implemented");
-            Ok(())
+        cli::ConfigCommands::Show => handle_config_show().await,
+        cli::ConfigCommands::Validate => handle_config_validate().await,
+    }
+}
+
+async fn handle_config_show() -> anyhow::Result<()> {
+    echo::header("Current Configuration");
+
+    let config_vars = vec![
+        ("DATABASE_URL", "file:bot.db"),
+        ("BSKY_HANDLE", "not set"),
+        ("BSKY_APP_PASSWORD", "not set"),
+        ("PDS_HOST", "https://bsky.social"),
+        ("GEMINI_API_KEY", "not set"),
+        ("GEMINI_MODEL", "gemini-3-pro-preview"),
+        ("DASHBOARD_TOKEN", "not set"),
+    ];
+
+    for (key, default) in config_vars {
+        let value = std::env::var(key).unwrap_or_else(|_| default.to_string());
+
+        let display_value = if key.contains("PASSWORD") || key.contains("TOKEN") || key.contains("API_KEY") {
+            if value == "not set" {
+                "not set".to_string()
+            } else {
+                format!("****{}****", &value.chars().rev().take(4).collect::<String>())
+            }
+        } else {
+            value.clone()
+        };
+
+        println!("  {} = {}", key, display_value);
+    }
+
+    Ok(())
+}
+
+async fn handle_config_validate() -> anyhow::Result<()> {
+    echo::header("Validating Configuration");
+
+    let mut all_passed = true;
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
+    echo::info("Checking DATABASE_URL...");
+
+    let db_path = db_url.replace("file:", "");
+
+    match std::fs::metadata(&db_path) {
+        Ok(meta) => {
+            if meta.is_file() {
+                println!("  ✓ Database file exists and is writable");
+            } else if meta.is_dir() {
+                println!("  ✓ Database directory exists");
+            } else {
+                echo::error("  ✗ Path exists but is not a file or directory");
+                all_passed = false;
+            }
         }
-        cli::ConfigCommands::Validate => {
-            echo::warn("Config validate command not yet implemented");
-            Ok(())
+        Err(_) => {
+            if db_url.starts_with("file:") {
+                let path = db_url.strip_prefix("file:").unwrap_or(&db_url);
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if parent.exists() {
+                        println!("  ✓ Parent directory exists (database will be created)");
+                    } else {
+                        echo::error("  ✗ Parent directory does not exist");
+                        all_passed = false;
+                    }
+                } else {
+                    echo::error("  ✗ Invalid database path");
+                    all_passed = false;
+                }
+            } else {
+                println!("  ! Remote database URL (skipping filesystem check)");
+            }
         }
+    }
+
+    echo::info("Checking BSKY_HANDLE...");
+    let handle = std::env::var("BSKY_HANDLE");
+    match handle {
+        Ok(h) if h.contains('.') => println!("  ✓ BSKY_HANDLE is set: {}", h),
+        Ok(_) => {
+            echo::error("  ✗ BSKY_HANDLE format invalid (should be like user.bsky.social)");
+            all_passed = false;
+        }
+        Err(_) => echo::warn("  ! BSKY_HANDLE not set (required for Bluesky operations)"),
+    }
+
+    echo::info("Checking BSKY_APP_PASSWORD...");
+    let password = std::env::var("BSKY_APP_PASSWORD");
+    match password {
+        Ok(p) if p.contains('-') => println!("  ✓ BSKY_APP_PASSWORD is set"),
+        Ok(_) => echo::warn("  ! BSKY_APP_PASSWORD may be in wrong format (should be xxxx-xxxx-xxxx-xxxx)"),
+        Err(_) => echo::warn("  ! BSKY_APP_PASSWORD not set (required for Bluesky operations)"),
+    }
+
+    echo::info("Checking GEMINI_API_KEY...");
+    let api_key = std::env::var("GEMINI_API_KEY");
+    match api_key {
+        Ok(key) if key.starts_with("AIza") => println!("  ✓ GEMINI_API_KEY is set"),
+        Ok(_) => {
+            echo::error("  ✗ GEMINI_API_KEY format invalid (should start with 'AIza')");
+            all_passed = false;
+        }
+        Err(_) => echo::warn("  ! GEMINI_API_KEY not set (required for AI operations)"),
+    }
+
+    echo::info("Checking GEMINI_MODEL...");
+    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3-pro-preview".to_string());
+    println!("  ✓ GEMINI_MODEL: {}", model);
+
+    echo::info("Checking DASHBOARD_TOKEN...");
+    let token = std::env::var("DASHBOARD_TOKEN");
+    match token {
+        Ok(t) if t != "changeme" => println!("  ✓ DASHBOARD_TOKEN is set"),
+        Ok(_) => {
+            echo::warn("  ! DASHBOARD_TOKEN is set to default (change for security)");
+        }
+        Err(_) => {
+            echo::warn("  ! DASHBOARD_TOKEN not set (required for dashboard access)");
+        }
+    }
+
+    match all_passed {
+        true => echo::ok("All configuration checks passed!"),
+        false => anyhow::bail!("Some configuration checks failed"),
     }
 }
 
@@ -380,7 +562,7 @@ async fn handle_vector(command: &cli::VectorCommands) -> anyhow::Result<()> {
 
             let embedding = embedding_provider.embed(text).await?;
 
-            echo::success("Embedding generated");
+            echo::ok("Embedding generated")?;
             println!("  Dimensions: {}", embedding.len());
             println!("  First 5 values: {:?}", &embedding[..embedding.len().min(5)]);
             println!("  Last 5 values: {:?}", &embedding[embedding.len().saturating_sub(5)..]);
@@ -389,11 +571,9 @@ async fn handle_vector(command: &cli::VectorCommands) -> anyhow::Result<()> {
         }
         cli::VectorCommands::Backfill { root_uri } => {
             let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
-
             let vector_store = Arc::new(SqliteVecStore::new(&vector_db_url, MemoryConfig::default()).await?);
             let embedding_provider = Arc::new(GeminiEmbeddingProvider::from_env()?);
             let retriever = SemanticRetriever::new(vector_store, embedding_provider, MemoryConfig::default());
-
             let history = repo.get_thread_history(root_uri).await?;
 
             echo::info(&format!("Found {} messages in conversation", history.len()));
@@ -404,10 +584,8 @@ async fn handle_vector(command: &cli::VectorCommands) -> anyhow::Result<()> {
                 .collect();
 
             let added = retriever.backfill_conversation(root_uri, &messages).await?;
-
-            echo::success(&format!("Backfilled {} memories for conversation", added));
-
-            Ok(())
+            let msg = format!("Backfilled {} memories for conversation", added);
+            echo::ok(&msg)
         }
     }
 }
