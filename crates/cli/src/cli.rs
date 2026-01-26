@@ -16,6 +16,10 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Dry-run mode (show what would happen without making changes)
+    #[arg(long, default_value = "false")]
+    pub dry_run: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -70,6 +74,18 @@ pub enum Commands {
     Serve,
     /// Show service status
     Status,
+    /// Tail logs from running server
+    Logs {
+        /// Filter by log level (debug, info, warn, error)
+        #[arg(long)]
+        level: Option<String>,
+        /// Filter by component (jetstream, bsky, gemini, etc.)
+        #[arg(long)]
+        component: Option<String>,
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Configuration commands
     Config {
         #[command(subcommand)]
@@ -145,6 +161,18 @@ pub enum DbCommands {
     },
     /// List cached identities
     Identities,
+    /// Backup database to a file
+    Backup {
+        /// Destination path for backup
+        path: String,
+    },
+    /// Restore database from a backup file
+    Restore {
+        /// Source path of backup file
+        path: String,
+    },
+    /// Vacuum database to reclaim space
+    Vacuum,
 }
 
 #[derive(Subcommand)]

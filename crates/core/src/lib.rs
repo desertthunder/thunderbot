@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod bsky;
 pub mod db;
+pub mod error;
 pub mod gemini;
 pub mod health;
 pub mod jetstream;
@@ -15,6 +16,7 @@ pub use db::{
     ConversationRow, DatabaseRepository, DatabaseStats, Db, IdentityResolver, IdentityResolverConfig, IdentityRow,
     LibsqlRepository, SessionRow, ThreadContext, ThreadContextBuilder,
 };
+pub use error::{authentication_failed_bluesky, is_permanent, is_transient};
 pub use gemini::{GeminiClient, PromptBuilder};
 pub use health::{ComponentHealth, HealthRegistry, HealthReport, HealthStatus, JetstreamState};
 pub use jetstream::{JetstreamClient, listen, replay};

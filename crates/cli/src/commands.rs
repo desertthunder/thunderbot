@@ -12,12 +12,15 @@ use thunderbot_core::{DatabaseRepository, VectorStore};
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Jetstream { ref command } => handle_jetstream(command).await,
-        Commands::Bsky { ref command } => handle_bsky(command).await,
+        Commands::Bsky { ref command } => handle_bsky(&cli, command).await,
         Commands::Db { ref command } => handle_db(command).await,
-        Commands::Ai { ref command } => handle_ai(command).await,
+        Commands::Ai { ref command } => handle_ai(&cli, command).await,
         Commands::Vector { ref command } => handle_vector(command).await,
-        Commands::Serve => handle_serve().await,
+        Commands::Serve => handle_serve(&cli).await,
         Commands::Status => handle_status(&cli).await,
+        Commands::Logs { ref level, ref component, follow } => {
+            handle_logs(level.as_deref(), component.as_deref(), follow).await
+        }
         Commands::Config { ref command } => handle_config(command).await,
     }
 }
@@ -37,7 +40,7 @@ async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
+async fn handle_bsky(cli: &Cli, command: &cli::BskyCommands) -> anyhow::Result<()> {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
@@ -70,6 +73,13 @@ async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
             Ok(())
         }
         cli::BskyCommands::Post { text } => {
+            if cli.dry_run {
+                echo::info("[DRY-RUN] Would create post:");
+                println!("  Text: {}", text);
+                println!("  Character count: {}", text.chars().count());
+                return Ok(());
+            }
+
             let result = client.create_post(text).await?;
 
             echo::success("Post created successfully!");
@@ -99,6 +109,15 @@ async fn handle_bsky(command: &cli::BskyCommands) -> anyhow::Result<()> {
                 .and_then(|r| r.get("cid"))
                 .and_then(|c| c.as_str())
                 .unwrap_or(parent_cid);
+
+            if cli.dry_run {
+                echo::info("[DRY-RUN] Would create reply:");
+                println!("  Parent URI: {}", uri);
+                println!("  Root URI: {}", root_uri);
+                println!("  Text: {}", text);
+                println!("  Character count: {}", text.chars().count());
+                return Ok(());
+            }
 
             let result = client.reply_to_post(text, uri, parent_cid, root_uri, root_cid).await?;
 
@@ -193,10 +212,64 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        cli::DbCommands::Backup { path } => {
+            echo::info(&format!("Creating backup to: {}", path));
+
+            let before_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
+            let size = repo.backup(path).await?;
+            // TODO: use or remove
+            let _after_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
+
+            let size_mb = size as f64 / (1024.0 * 1024.0);
+            echo::success("Backup created successfully");
+            println!("  Path: {}", path);
+            println!("  Size: {:.2} MB", size_mb);
+
+            if before_size > 0 && size > 0 {
+                let saved_mb = (before_size.saturating_sub(size) as f64) / (1024.0 * 1024.0);
+                if saved_mb > 0.01 {
+                    println!("  Saved: {:.2} MB", saved_mb);
+                }
+            }
+
+            Ok(())
+        }
+        cli::DbCommands::Restore { path } => {
+            if !std::path::Path::new(path).exists() {
+                anyhow::bail!("Backup file does not exist: {}", path);
+            }
+
+            echo::warn("This will replace the current database. Backup file will not be modified.");
+            println!("  From: {}", path);
+
+            repo.restore(path).await?;
+
+            echo::success("Database restored successfully");
+            println!("  Source: {}", path);
+            Ok(())
+        }
+        cli::DbCommands::Vacuum => {
+            echo::info("Running database vacuum (this may take a while)...");
+
+            let (before, after) = repo.vacuum().await?;
+            let saved = before.saturating_sub(after);
+            let before_mb = before as f64 / (1024.0 * 1024.0);
+            let after_mb = after as f64 / (1024.0 * 1024.0);
+            let saved_mb = saved as f64 / (1024.0 * 1024.0);
+
+            echo::success("Database vacuum completed");
+            println!("  Before: {:.2} MB", before_mb);
+            println!("  After: {:.2} MB", after_mb);
+            if saved > 0 {
+                println!("  Saved: {:.2} MB", saved_mb);
+            }
+
+            Ok(())
+        }
     }
 }
 
-async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
+async fn handle_ai(cli: &Cli, command: &cli::AiCommands) -> anyhow::Result<()> {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let repo = Arc::new(LibsqlRepository::new(&db_url).await?);
@@ -206,6 +279,13 @@ async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
 
     match command {
         cli::AiCommands::Prompt { text } => {
+            if cli.dry_run {
+                echo::info("[DRY-RUN] Would send prompt to Gemini:");
+                println!("  Prompt: {}", text);
+                echo::info("  System prompt: None");
+                return Ok(());
+            }
+
             let agent = Agent::from_clients(bsky_client, repo.clone(), "did:plc:placeholder".to_string(), None)?;
 
             let response = agent.one_shot_prompt(text).await?;
@@ -270,12 +350,16 @@ async fn handle_ai(command: &cli::AiCommands) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_serve() -> anyhow::Result<()> {
+async fn handle_serve(cli: &Cli) -> anyhow::Result<()> {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let dashboard_token = std::env::var("DASHBOARD_TOKEN").unwrap_or_else(|_| "changeme".to_string());
 
     echo::info(&format!("Starting web server with token: {}", dashboard_token));
+
+    if cli.dry_run {
+        echo::warn("DRY-RUN MODE: Posts will be logged but not sent to Bluesky");
+    }
 
     let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
     let bsky_client = Arc::new(BskyClient::new(&pds_host, Some(repo.clone())));
@@ -283,7 +367,7 @@ async fn handle_serve() -> anyhow::Result<()> {
     bsky_client.load_from_database().await;
 
     let health = Arc::new(thunderbot_core::HealthRegistry::new());
-    let server = thunderbot_core::Server::new(repo, bsky_client, health);
+    let server = thunderbot_core::Server::new(repo, bsky_client, health).with_dry_run(cli.dry_run);
 
     echo::success("Web server starting on http://127.0.0.1:3000");
     echo::info("Use the following Authorization header:");
@@ -588,4 +672,13 @@ async fn handle_vector(command: &cli::VectorCommands) -> anyhow::Result<()> {
             echo::ok(&msg)
         }
     }
+}
+
+async fn handle_logs(_level: Option<&str>, _component: Option<&str>, _follow: bool) -> anyhow::Result<()> {
+    echo::warn("Logs endpoint not implemented on server");
+    echo::info("Use -vv or -vvv flags when running 'thunderbot serve' for verbose logging");
+    echo::info("For now, you can view logs directly from server process output");
+    echo::info("");
+    echo::info("Example: thunderbot serve -vv");
+    Ok(())
 }

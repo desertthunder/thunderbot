@@ -14,6 +14,7 @@ pub struct Agent {
     own_did: String,
     system_instruction: Option<String>,
     rag_retriever: Option<Arc<crate::SemanticRetriever>>,
+    dry_run: bool,
 }
 
 impl Agent {
@@ -21,7 +22,7 @@ impl Agent {
         gemini_client: GeminiClient, bsky_client: Arc<BskyClient>, db: Db, own_did: String,
         system_instruction: Option<String>,
     ) -> Self {
-        Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None }
+        Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None, dry_run: false }
     }
 
     pub fn from_clients(
@@ -29,12 +30,21 @@ impl Agent {
     ) -> Result<Self> {
         let gemini_client = GeminiClient::from_env()?;
 
-        Ok(Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None })
+        Ok(Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None, dry_run: false })
     }
 
     pub fn with_rag(mut self, retriever: Arc<crate::SemanticRetriever>) -> Self {
         self.rag_retriever = Some(retriever);
         self
+    }
+
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
     }
 
     pub async fn process_mention(&self, post_uri: &str, _: &str) -> Result<()> {
@@ -101,6 +111,11 @@ impl Agent {
 
         if response.trim() == "<SILENT_THOUGHT>" {
             tracing::info!("Silent mode: skipping response");
+            return Ok(());
+        }
+
+        if self.dry_run {
+            tracing::info!("[DRY-RUN] Would post reply: {}", response);
             return Ok(());
         }
 

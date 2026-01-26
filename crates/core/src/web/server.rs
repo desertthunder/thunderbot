@@ -19,6 +19,7 @@ pub struct Server {
     app_state: WebAppState,
     address: String,
     port: u16,
+    dry_run: bool,
 }
 
 impl Server {
@@ -28,6 +29,7 @@ impl Server {
             app_state: WebAppState { db, bsky_client, health, jetstream_state },
             address: "127.0.0.1".to_string(),
             port: 3000,
+            dry_run: false,
         }
     }
 
@@ -39,6 +41,15 @@ impl Server {
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
+    }
+
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
     }
 
     pub fn build_router(&self) -> Router {
@@ -72,7 +83,40 @@ impl Server {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!("Web server listening on http://{}", addr);
-        axum::serve(listener, app).await?;
+
+        let shutdown_signal = async {
+            let ctrl_c = async {
+                tokio::signal::ctrl_c().await.ok();
+                tracing::info!("Received Ctrl+C, initiating graceful shutdown");
+            };
+
+            #[cfg(unix)]
+            let terminate = async {
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(mut signal) => {
+                        signal.recv().await;
+                        tracing::info!("Received SIGTERM, initiating graceful shutdown");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to setup SIGTERM handler: {}", e);
+                    }
+                }
+            };
+
+            #[cfg(unix)]
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = terminate => {},
+            }
+
+            #[cfg(not(unix))]
+            ctrl_c.await;
+        };
+
+        let graceful = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal);
+
+        tracing::info!("Graceful shutdown complete");
+        graceful.await?;
         Ok(())
     }
 }
