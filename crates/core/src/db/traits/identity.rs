@@ -1,8 +1,8 @@
 //! Identity (DID to handle) repository operations.
 
+use crate::db::types::IdentityRow;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::db::types::IdentityRow;
 
 /// Repository for identity resolution and caching.
 #[async_trait]

@@ -150,3 +150,46 @@ pub struct XrpcError {
     pub error: String,
     pub message: Option<String>,
 }
+
+/// Profile record for updating user bio via XRPC putRecord.
+#[derive(Debug, Serialize)]
+pub struct ProfileRecordWrite {
+    #[serde(rename = "$type")]
+    pub record_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<AvatarRef>,
+}
+
+impl ProfileRecordWrite {
+    /// Create a new profile update request with only description.
+    pub fn new_with_description(description: String) -> Self {
+        Self {
+            record_type: "app.bsky.actor.profile".to_string(),
+            display_name: None,
+            description: Some(description),
+            avatar: None,
+        }
+    }
+
+    /// Create a new profile update request with display name and description.
+    pub fn new(display_name: Option<String>, description: Option<String>) -> Self {
+        Self { record_type: "app.bsky.actor.profile".to_string(), display_name, description, avatar: None }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AvatarRef {
+    #[serde(rename = "$type")]
+    pub ref_type: String,
+    pub ref_: String,
+}
+
+impl AvatarRef {
+    pub fn new(uri: String) -> Self {
+        Self { ref_type: "blob_ref".to_string(), ref_: uri }
+    }
+}

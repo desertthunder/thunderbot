@@ -1,12 +1,13 @@
-use crate::db::types::ActivityLogRow;
-
 use super::bsky::BskyClient;
 use super::db::{ConversationRow, Db, IdentityResolver, IdentityResolverConfig, ThreadContextBuilder};
 use super::gemini::{GeminiClient, PromptBuilder};
+use crate::control::{PolicyEnforcer, ResponseQueueItem, ResponseStatus};
+use crate::db::types::ActivityLogRow;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub struct Agent {
@@ -17,6 +18,10 @@ pub struct Agent {
     system_instruction: Option<String>,
     rag_retriever: Option<Arc<crate::SemanticRetriever>>,
     dry_run: bool,
+    /// Policy enforcer for quiet hours and reply limits
+    pub policy_enforcer: Arc<PolicyEnforcer>,
+    /// Preview mode flag
+    preview_mode: Arc<RwLock<bool>>,
 }
 
 impl Agent {
@@ -24,15 +29,37 @@ impl Agent {
         gemini_client: GeminiClient, bsky_client: Arc<BskyClient>, db: Db, own_did: String,
         system_instruction: Option<String>,
     ) -> Self {
-        Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None, dry_run: false }
+        let policy_enforcer = Arc::new(PolicyEnforcer::new(db.clone()));
+        Self {
+            gemini_client,
+            bsky_client,
+            db,
+            own_did,
+            system_instruction,
+            rag_retriever: None,
+            dry_run: false,
+            policy_enforcer,
+            preview_mode: Arc::new(RwLock::new(false)),
+        }
     }
 
     pub fn from_clients(
         bsky_client: Arc<BskyClient>, db: Db, own_did: String, system_instruction: Option<String>,
     ) -> Result<Self> {
         let gemini_client = GeminiClient::from_env()?;
+        let policy_enforcer = Arc::new(PolicyEnforcer::new(db.clone()));
 
-        Ok(Self { gemini_client, bsky_client, db, own_did, system_instruction, rag_retriever: None, dry_run: false })
+        Ok(Self {
+            gemini_client,
+            bsky_client,
+            db,
+            own_did,
+            system_instruction,
+            rag_retriever: None,
+            dry_run: false,
+            policy_enforcer,
+            preview_mode: Arc::new(RwLock::new(false)),
+        })
     }
 
     pub fn with_rag(mut self, retriever: Arc<crate::SemanticRetriever>) -> Self {
@@ -47,6 +74,15 @@ impl Agent {
 
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
+    }
+
+    pub async fn set_preview_mode(&self, enabled: bool) {
+        let mut mode = self.preview_mode.write().await;
+        *mode = enabled;
+    }
+
+    pub async fn is_preview_mode(&self) -> bool {
+        *self.preview_mode.read().await
     }
 
     pub async fn process_mention(&self, post_uri: &str, _: &str) -> Result<()> {
@@ -68,6 +104,11 @@ impl Agent {
             return Ok(());
         }
 
+        if self.db.is_blocked(author_did).await.unwrap_or(false) {
+            tracing::info!("Skipping reply to blocked author: {}", author_did);
+            return Ok(());
+        }
+
         let parent_cid = post_record
             .get("cid")
             .and_then(|v| v.as_str())
@@ -86,6 +127,21 @@ impl Agent {
             .and_then(|r| r.get("cid"))
             .and_then(|c| c.as_str())
             .unwrap_or(parent_cid);
+
+        let is_quiet_hours = !self.policy_enforcer.can_post_now().await.unwrap_or(true);
+        let is_preview_mode = self.is_preview_mode().await || is_quiet_hours;
+
+        if !is_preview_mode {
+            if let Err(e) = self.policy_enforcer.can_reply_to_thread(root_uri, author_did).await {
+                tracing::warn!("Reply limits check failed: {}", e);
+                return Err(e);
+            }
+
+            if !self.policy_enforcer.can_reply_to_thread(root_uri, author_did).await? {
+                tracing::info!("Reply limits prevent response to thread {}", root_uri);
+                return Ok(());
+            }
+        }
 
         let thread_builder = ThreadContextBuilder::new(self.db.clone());
         let identity_resolver = IdentityResolver::new(self.db.clone(), IdentityResolverConfig::default());
@@ -113,6 +169,25 @@ impl Agent {
 
         if response.trim() == "<SILENT_THOUGHT>" {
             tracing::info!("Silent mode: skipping response");
+            return Ok(());
+        }
+
+        if is_preview_mode {
+            tracing::info!("Preview mode active: queuing response for approval");
+            let queue_item = ResponseQueueItem {
+                id: Uuid::new_v4().to_string(),
+                thread_uri: root_uri.to_string(),
+                parent_uri: post_uri.to_string(),
+                parent_cid: parent_cid.to_string(),
+                root_uri: root_uri.to_string(),
+                root_cid: root_cid.to_string(),
+                content: response.clone(),
+                status: ResponseStatus::Pending,
+                created_at: Utc::now(),
+                expires_at: None,
+            };
+
+            self.db.queue_response(queue_item).await?;
             return Ok(());
         }
 

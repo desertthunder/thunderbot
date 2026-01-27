@@ -1,8 +1,8 @@
 //! Quiet hours repository operations.
 
+use crate::control::QuietHoursWindow;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::control::QuietHoursWindow;
 
 /// Repository for quiet hours configuration.
 #[async_trait]

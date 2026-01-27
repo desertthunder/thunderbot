@@ -1,6 +1,8 @@
 use crate::bsky::BskyClient;
+use crate::control::{PolicyEnforcer, SessionManager, StatusBroadcaster};
 use crate::db::DatabaseRepository;
 use crate::health::{HealthRegistry, JetstreamState};
+use crate::web::controls::*;
 use crate::web::handlers::get_metrics;
 use crate::web::handlers::{
     WebAppState, get_activity_timeline, get_admin, get_chat, get_config, get_dashboard, get_export_csv,
@@ -28,8 +30,22 @@ pub struct Server {
 impl Server {
     pub fn new(db: Arc<dyn DatabaseRepository>, bsky_client: Arc<BskyClient>, health: Arc<HealthRegistry>) -> Self {
         let jetstream_state = Arc::new(tokio::sync::RwLock::new(JetstreamState::new()));
+        let session_manager = Arc::new(SessionManager::new(bsky_client.clone(), db.clone()));
+        let policy_enforcer = Arc::new(PolicyEnforcer::new(db.clone()));
+        let broadcaster = Arc::new(StatusBroadcaster::new(bsky_client.clone()));
+        let event_sender = None;
+
         Self {
-            app_state: WebAppState { db, bsky_client, health, jetstream_state },
+            app_state: WebAppState {
+                db,
+                bsky_client,
+                health,
+                jetstream_state,
+                session_manager,
+                policy_enforcer,
+                broadcaster,
+                event_sender,
+            },
             address: "127.0.0.1".to_string(),
             port: 3000,
             dry_run: false,
@@ -53,6 +69,21 @@ impl Server {
 
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
+    }
+
+    /// Set the event sender for DLQ retry functionality.
+    /// Should be called when jetstream listener starts.
+    pub fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<crate::jetstream::event::JetstreamEvent>) {
+        self.app_state.event_sender = Some(sender);
+    }
+
+    /// Get references to control components for use in other parts of the application.
+    pub fn get_control_components(&self) -> (Arc<SessionManager>, Arc<PolicyEnforcer>, Arc<StatusBroadcaster>) {
+        (
+            self.app_state.session_manager.clone(),
+            self.app_state.policy_enforcer.clone(),
+            self.app_state.broadcaster.clone(),
+        )
     }
 
     pub fn build_router(&self) -> Router {
@@ -87,6 +118,36 @@ impl Server {
             .route("/api/clear-thread", post(post_clear_thread))
             .route("/api/login", post(post_login))
             .route("/api/chat/send", post(post_chat_send))
+            .route("/controls", get(get_controls_landing))
+            .route("/controls/rate-limits", get(get_rate_limits))
+            .route("/api/rate-limit-history", get(get_rate_limit_history_data))
+            .route("/controls/event-queue", get(get_event_queue_status))
+            .route("/api/pause-events", post(post_pause_events))
+            .route("/api/resume-events", post(post_resume_events))
+            .route("/controls/session", get(get_session_info))
+            .route("/api/session/refresh", post(post_refresh_session))
+            .route("/controls/preview", get(get_pending_responses))
+            .route("/api/preview/approve", post(post_approve_response))
+            .route("/api/preview/edit", post(post_edit_response))
+            .route("/api/preview/discard", post(post_discard_response))
+            .route("/api/preview/toggle", post(post_toggle_preview_mode))
+            .route("/controls/quiet-hours", get(get_quiet_hours))
+            .route("/api/quiet-hours/save", post(post_save_quiet_hours))
+            .route("/api/quiet-hours/delete", post(post_delete_quiet_hours))
+            .route("/controls/reply-limits", get(get_reply_limits))
+            .route("/api/reply-limits/update", post(post_update_reply_limits))
+            .route("/controls/blocklist", get(get_blocklist))
+            .route("/api/blocklist/add", post(post_block_author))
+            .route("/api/blocklist/remove", post(post_unblock_author))
+            .route("/api/blocklist/export", get(get_export_blocklist))
+            .route("/api/blocklist/import", post(post_import_blocklist))
+            .route("/controls/status-broadcast", get(get_status_broadcast))
+            .route("/api/status/post", post(post_status_update))
+            .route("/api/status/bio", post(post_update_bio))
+            .route("/controls/dlq", get(get_dead_letter_queue))
+            .route("/api/dlq/retry", post(post_retry_dlq_item))
+            .route("/api/dlq/bulk-retry", post(post_bulk_retry_dlq))
+            .route("/api/dlq/purge", post(post_purge_dlq))
             .nest_service("/static", ServeDir::new("crates/core/src/web/static"))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())

@@ -1,8 +1,8 @@
 //! Session metadata repository operations.
 
+use crate::control::SessionMetadata;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::control::SessionMetadata;
 
 /// Repository for session metadata and proactive refresh tracking.
 #[async_trait]

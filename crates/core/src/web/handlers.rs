@@ -1,4 +1,5 @@
 use crate::bsky::BskyClient;
+use crate::control::{PolicyEnforcer, SessionManager, StatusBroadcaster};
 use crate::db::types::FilterPresetRow;
 use crate::db::{ActivityLogRow, DatabaseRepository};
 use crate::health::{
@@ -24,12 +25,25 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Application state shared across all web handlers.
 #[derive(Clone)]
 pub struct WebAppState {
+    /// Database repository
     pub db: Arc<dyn DatabaseRepository>,
+    /// Bluesky API client
     pub bsky_client: Arc<BskyClient>,
+    /// Health check registry
     pub health: Arc<HealthRegistry>,
+    /// Jetstream connection state
     pub jetstream_state: Arc<tokio::sync::RwLock<JetstreamState>>,
+    /// Session manager for proactive token refresh
+    pub session_manager: Arc<SessionManager>,
+    /// Policy enforcer for quiet hours and reply limits
+    pub policy_enforcer: Arc<PolicyEnforcer>,
+    /// Status broadcaster for profile updates and announcements
+    pub broadcaster: Arc<StatusBroadcaster>,
+    /// Event sender for DLQ retry (None if jetstream not running)
+    pub event_sender: Option<tokio::sync::mpsc::Sender<crate::jetstream::event::JetstreamEvent>>,
 }
 
 #[derive(Deserialize)]

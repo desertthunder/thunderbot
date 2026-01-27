@@ -1,8 +1,8 @@
 //! Dead letter queue repository operations.
 
+use crate::control::DeadLetterItem;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::control::DeadLetterItem;
 
 /// Repository for dead letter queue management.
 #[async_trait]

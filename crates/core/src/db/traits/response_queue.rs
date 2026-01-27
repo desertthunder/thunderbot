@@ -1,8 +1,8 @@
 //! Response preview queue repository operations.
 
+use crate::control::{ResponseQueueItem, ResponseStatus};
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::control::{ResponseQueueItem, ResponseStatus};
 
 /// Repository for response preview queue management.
 #[async_trait]

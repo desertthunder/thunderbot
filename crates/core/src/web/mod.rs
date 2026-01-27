@@ -1,4 +1,5 @@
 mod auth;
+mod controls;
 mod cookies;
 mod handlers;
 mod server;

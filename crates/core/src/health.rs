@@ -238,11 +238,19 @@ pub struct JetstreamState {
     pub connected: bool,
     pub last_event: Option<chrono::DateTime<Utc>>,
     pub reconnect_count: u32,
+    /// Current queue depth (events awaiting processing)
+    pub queue_depth: usize,
+    /// Events processed per second (rolling average)
+    pub events_per_second: f64,
+    /// Whether event processing is paused
+    pub is_paused: bool,
+    /// Threshold for queue depth alert
+    pub backlog_alert_threshold: usize,
 }
 
 impl JetstreamState {
     pub fn new() -> Self {
-        Self::default()
+        Self { backlog_alert_threshold: 1000, ..Default::default() }
     }
 
     pub fn set_connected(&mut self, connected: bool) {
@@ -262,6 +270,26 @@ impl JetstreamState {
 
     pub fn time_since_last_event(&self) -> Option<chrono::Duration> {
         self.last_event.map(|t| Utc::now() - t)
+    }
+
+    /// Check if queue is at backlog alert threshold.
+    pub fn is_backlogged(&self) -> bool {
+        self.queue_depth >= self.backlog_alert_threshold
+    }
+
+    /// Update queue depth.
+    pub fn set_queue_depth(&mut self, depth: usize) {
+        self.queue_depth = depth;
+    }
+
+    /// Update events per second metric.
+    pub fn set_events_per_second(&mut self, eps: f64) {
+        self.events_per_second = eps;
+    }
+
+    /// Pause or resume event processing.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.is_paused = paused;
     }
 }
 

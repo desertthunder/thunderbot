@@ -1,8 +1,8 @@
 //! Blocklist repository operations.
 
+use crate::control::BlocklistEntry;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::control::BlocklistEntry;
 
 /// Repository for blocklist management.
 #[async_trait]

@@ -1,9 +1,9 @@
 //! Reply limits repository operations.
 
+use crate::control::ReplyLimitsConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use crate::control::ReplyLimitsConfig;
 
 /// Repository for reply limits configuration and tracking.
 #[async_trait]

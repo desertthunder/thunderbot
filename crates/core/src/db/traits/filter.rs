@@ -1,8 +1,8 @@
 //! Filter preset repository operations.
 
+use crate::db::types::FilterPresetRow;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::db::types::FilterPresetRow;
 
 /// Repository for filter preset management.
 #[async_trait]

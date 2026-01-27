@@ -64,8 +64,7 @@ pub trait DatabaseRepository:
     async fn run_migration(&self) -> Result<()>;
 }
 
-// Re-export commonly used types
 pub use crate::control::{
-    BlocklistEntry, BlockType, DeadLetterItem, QuietHoursWindow, RateLimitSnapshot,
-    ReplyLimitsConfig, ResponseQueueItem, ResponseStatus, SessionMetadata,
+    BlockType, BlocklistEntry, DeadLetterItem, QuietHoursWindow, RateLimitSnapshot, ReplyLimitsConfig,
+    ResponseQueueItem, ResponseStatus, SessionMetadata,
 };

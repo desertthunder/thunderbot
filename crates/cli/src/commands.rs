@@ -5,6 +5,7 @@ use anyhow::Context;
 use reqwest::Client;
 use std::sync::Arc;
 use thunderbot_core::BskyClient;
+use thunderbot_core::db::traits::{ControlRepository, IdentityRepository, ThreadRepository};
 use thunderbot_core::jetstream;
 use thunderbot_core::{Agent, IdentityResolver, IdentityResolverConfig, LibsqlRepository, ThreadContextBuilder};
 use thunderbot_core::{DatabaseRepository, VectorStore};

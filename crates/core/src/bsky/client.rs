@@ -1,13 +1,108 @@
 use super::types::*;
 use crate::db::{DatabaseRepository, SessionRow};
 
+use ProfileRecordWrite;
+
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use reqwest::Client;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::RwLock;
 
 const SESSION_FILE: &str = ".bsky_session.json";
+
+/// Tracks rate limit state from Bluesky API responses.
+#[derive(Clone)]
+pub struct RateLimitTracker {
+    remaining: Arc<AtomicI64>,
+    limit: Arc<AtomicI64>,
+    reset_at: Arc<RwLock<Option<DateTime<Utc>>>>,
+    db: Option<Arc<dyn DatabaseRepository>>,
+}
+
+impl RateLimitTracker {
+    /// Create a new rate limit tracker.
+    pub fn new(db: Option<Arc<dyn DatabaseRepository>>) -> Self {
+        Self {
+            remaining: Arc::new(AtomicI64::new(-1)),
+            limit: Arc::new(AtomicI64::new(-1)),
+            reset_at: Arc::new(RwLock::new(None)),
+            db,
+        }
+    }
+
+    /// Update rate limit state from response headers.
+    pub fn update_from_headers(&self, headers: &reqwest::header::HeaderMap) {
+        if let Some(remaining_val) = headers.get("RateLimit-Remaining")
+            && let Ok(remaining_str) = remaining_val.to_str()
+            && let Ok(remaining_i64) = remaining_str.parse::<i64>()
+        {
+            self.remaining.store(remaining_i64, Ordering::Relaxed);
+            tracing::debug!("Rate limit remaining: {}", remaining_i64);
+        }
+
+        if let Some(limit_val) = headers.get("RateLimit-Limit")
+            && let Ok(limit_str) = limit_val.to_str()
+            && let Ok(limit_i64) = limit_str.parse::<i64>()
+        {
+            self.limit.store(limit_i64, Ordering::Relaxed);
+        }
+
+        if let Some(reset_val) = headers.get("RateLimit-Reset")
+            && let Ok(reset_str) = reset_val.to_str()
+            && let Ok(reset_timestamp) = reset_str.parse::<i64>()
+        {
+            let reset_time = DateTime::from_timestamp(reset_timestamp, 0).unwrap_or_else(Utc::now);
+            let mut reset_at_guard = self.reset_at.blocking_write();
+            *reset_at_guard = Some(reset_time);
+
+            if let Some(db) = &self.db {
+                let remaining = self.remaining.load(Ordering::Relaxed);
+                let endpoint = "com.atproto.repo.createRecord".to_string();
+                let db_clone = db.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = db_clone.save_rate_limit_snapshot(endpoint, remaining, reset_time).await {
+                        tracing::warn!("Failed to save rate limit snapshot: {}", e);
+                    }
+                });
+            }
+        }
+    }
+
+    /// Get current remaining requests.
+    pub fn remaining(&self) -> i64 {
+        self.remaining.load(Ordering::Relaxed)
+    }
+
+    /// Get rate limit ceiling.
+    pub fn limit(&self) -> i64 {
+        self.limit.load(Ordering::Relaxed)
+    }
+
+    /// Get when the rate limit resets.
+    pub async fn reset_at(&self) -> Option<DateTime<Utc>> {
+        *self.reset_at.read().await
+    }
+
+    /// Calculate usage percentage.
+    pub fn usage_percentage(&self) -> Option<f64> {
+        let limit = self.limit.load(Ordering::Relaxed);
+        let remaining = self.remaining.load(Ordering::Relaxed);
+
+        if limit > 0 && remaining >= 0 {
+            let used = limit - remaining;
+            Some((used as f64 / limit as f64) * 100.0)
+        } else {
+            None
+        }
+    }
+
+    /// Check if usage is at warning threshold (>= 80%).
+    pub fn is_warning_threshold(&self) -> bool {
+        self.usage_percentage().map(|p| p >= 80.0).unwrap_or(false)
+    }
+}
 
 #[derive(Clone)]
 pub struct BskyClient {
@@ -15,13 +110,22 @@ pub struct BskyClient {
     pds_host: String,
     session: Arc<RwLock<Option<Session>>>,
     db: Option<Arc<dyn DatabaseRepository>>,
+    /// Rate limit tracking
+    pub rate_tracker: Arc<RateLimitTracker>,
 }
 
 impl BskyClient {
     pub fn new(pds_host: &str, db: Option<Arc<dyn DatabaseRepository>>) -> Self {
         let session = Self::load_session_from_file_sync();
+        let rate_tracker = Arc::new(RateLimitTracker::new(db.clone()));
 
-        Self { client: Client::new(), pds_host: pds_host.to_string(), session: Arc::new(RwLock::new(session)), db }
+        Self {
+            client: Client::new(),
+            pds_host: pds_host.to_string(),
+            session: Arc::new(RwLock::new(session)),
+            db,
+            rate_tracker,
+        }
     }
 
     fn load_session_from_file_sync() -> Option<Session> {
@@ -196,6 +300,8 @@ impl BskyClient {
             .error_for_status()
             .with_context(|| "Failed to create post")?;
 
+        self.rate_tracker.update_from_headers(response.headers());
+
         let result: CreateRecordResponse = response.json().await?;
 
         tracing::info!("Post created: {}", result.uri);
@@ -240,6 +346,8 @@ impl BskyClient {
             .error_for_status()
             .with_context(|| "Failed to reply to post")?;
 
+        self.rate_tracker.update_from_headers(response.headers());
+
         let result: CreateRecordResponse = response.json().await?;
 
         tracing::info!("Reply created: {}", result.uri);
@@ -279,6 +387,8 @@ impl BskyClient {
             .await?
             .error_for_status()
             .with_context(|| "Failed to get post")?;
+
+        self.rate_tracker.update_from_headers(response.headers());
 
         Ok(response.json().await?)
     }
@@ -327,5 +437,56 @@ impl BskyClient {
             .with_context(|| format!("Failed to get profile: {}", did))?;
 
         Ok(response.json().await?)
+    }
+
+    /// Update profile bio using XRPC putRecord.
+    ///
+    /// This method updates the user's profile description (bio) while
+    /// preserving other profile fields like display name and avatar.
+    pub async fn update_profile(&self, description: Option<&str>) -> anyhow::Result<()> {
+        let session = {
+            let session_guard = self.session.read().await;
+            session_guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Not authenticated"))?
+        };
+
+        let current_profile = self.get_profile(&session.did).await.ok();
+        let profile_record = if let Some(desc) = description {
+            ProfileRecordWrite::new(
+                current_profile.as_ref().and_then(|p| p.display_name.clone()),
+                Some(desc.to_string()),
+            )
+        } else {
+            return Ok(());
+        };
+
+        let url = format!("{}/xrpc/com.atproto.repo.putRecord", self.pds_host);
+
+        let request = serde_json::json!({
+            "repo": session.did,
+            "collection": "app.bsky.actor.profile",
+            "rkey": "self",
+            "record": profile_record
+        });
+
+        tracing::debug!("Updating profile for: {}", session.did);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", self.auth_header().await?)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()
+            .with_context(|| "Failed to update profile")?;
+
+        self.rate_tracker.update_from_headers(response.headers());
+
+        tracing::info!("Profile updated successfully");
+
+        Ok(())
     }
 }

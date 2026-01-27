@@ -1,8 +1,8 @@
 //! Bluesky session repository operations.
 
+use crate::db::types::SessionRow;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::db::types::SessionRow;
 
 /// Repository for Bluesky session management.
 #[async_trait]

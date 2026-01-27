@@ -1,8 +1,8 @@
 //! Thread and conversation repository operations.
 
+use crate::db::types::{ConversationRow, DatabaseStats};
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::db::types::{ConversationRow, DatabaseStats};
 
 /// Repository for thread and conversation operations.
 #[async_trait]

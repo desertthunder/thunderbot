@@ -1,3 +1,4 @@
+use crate::control::DeadLetterItem;
 use crate::db::types::ActivityLogRow;
 use crate::db::{ConversationRow, Db, ThreadContextBuilder};
 use crate::jetstream::event::{JetstreamEvent, PostRecord};
@@ -20,8 +21,19 @@ impl EventProcessor {
 
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                if let Err(e) = Self::process_event(event, &db_clone).await {
+                if let Err(e) = Self::process_event(&event, &db_clone).await {
                     tracing::error!("Error processing event: {}", e);
+                    let dlq_item = DeadLetterItem {
+                        id: Uuid::new_v4().to_string(),
+                        event_json: serde_json::to_string(&event).unwrap_or_default(),
+                        error_message: e.to_string(),
+                        retry_count: 0,
+                        last_retry_at: None,
+                        created_at: Utc::now(),
+                    };
+                    if let Err(dlq_err) = db_clone.add_to_dlq(dlq_item).await {
+                        tracing::error!("Failed to send to DLQ: {}", dlq_err);
+                    }
                 }
             }
         });
@@ -34,14 +46,19 @@ impl EventProcessor {
         Ok(())
     }
 
-    async fn process_event(event: JetstreamEvent, db: &Db) -> anyhow::Result<()> {
+    async fn process_event(event: &JetstreamEvent, db: &Db) -> anyhow::Result<()> {
         let commit = match event {
             JetstreamEvent::Commit(commit) => commit,
             _ => return Ok(()),
         };
 
-        let record = if let Some(record_value) = commit.commit.record {
-            serde_json::from_value::<PostRecord>(record_value)?
+        if db.is_blocked(&commit.did).await.unwrap_or(false) {
+            tracing::debug!(" skipping blocked author: {}", commit.did);
+            return Ok(());
+        }
+
+        let record = if let Some(ref record_value) = commit.commit.record {
+            serde_json::from_value::<PostRecord>(record_value.clone())?
         } else {
             return Ok(());
         };
