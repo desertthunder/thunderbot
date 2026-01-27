@@ -153,25 +153,6 @@ where
         self.map_err(|e| {
             let error_str = e.to_string().to_lowercase();
 
-            // if error_str.contains("429") || error_str.contains("rate limit") {
-            //     rate_limited_bluesky()
-            // } else if error_str.contains("401")
-            //     || error_str.contains("unauthorized")
-            //     || error_str.contains("authentication")
-            // {
-            //     authentication_failed_bluesky()
-            // } else if error_str.contains("network") || error_str.contains("connection") || error_str.contains("timeout")
-            // {
-            //     network_error_bluesky(op)
-            // } else if error_str.contains("not found") || error_str.contains("404") {
-            //     not_found_post(op)
-            // } else {
-            //     ThunderBotError::NetworkError {
-            //         operation: op.to_string(),
-            //         suggestion: format!("Error: {}. Check your configuration and try again.", e),
-            //     }
-            // }
-
             match error_str {
                 s if s.contains("429") || s.contains("rate limit") => rate_limited_bluesky(),
                 s if s.contains("401") || s.contains("unauthorized") || s.contains("authentication") => {

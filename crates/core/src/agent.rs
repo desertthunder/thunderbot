@@ -1,3 +1,5 @@
+use crate::db::repository::ActivityLogRow;
+
 use super::bsky::BskyClient;
 use super::db::{ConversationRow, Db, IdentityResolver, IdentityResolverConfig, ThreadContextBuilder};
 use super::gemini::{GeminiClient, PromptBuilder};
@@ -122,6 +124,20 @@ impl Agent {
         tracing::debug!("Posting reply to Bluesky...");
         self.post_with_retry(&response, post_uri, parent_cid, root_uri, root_cid)
             .await?;
+
+        let activity = ActivityLogRow {
+            id: Uuid::new_v4().to_string(),
+            action_type: "reply".to_string(),
+            description: format!("Replied to mention: {}", &response.chars().take(50).collect::<String>()),
+            thread_uri: Some(root_uri.to_string()),
+            metadata_json: Some(
+                serde_json::json!({"post_uri": post_uri, "response_length": response.len()}).to_string(),
+            ),
+            created_at: Utc::now(),
+        };
+        if let Err(e) = self.db.log_activity(activity).await {
+            tracing::warn!("Failed to log activity: {}", e);
+        }
 
         let bot_conversation = ConversationRow {
             id: Uuid::new_v4().to_string(),

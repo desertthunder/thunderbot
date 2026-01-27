@@ -1,3 +1,4 @@
+use crate::db::repository::ActivityLogRow;
 use crate::db::{ConversationRow, Db, ThreadContextBuilder};
 use crate::jetstream::event::{JetstreamEvent, PostRecord};
 
@@ -52,16 +53,31 @@ impl EventProcessor {
 
         let conversation_row = ConversationRow {
             id: Uuid::new_v4().to_string(),
-            thread_root_uri: root_uri,
-            post_uri,
+            thread_root_uri: root_uri.clone(),
+            post_uri: post_uri.clone(),
             parent_uri,
             author_did: commit.did.clone(),
             role: "user".to_string(),
-            content: record.text,
+            content: record.text.clone(),
             created_at: Utc::now(),
         };
 
-        db.save_conversation(conversation_row).await?;
+        db.save_conversation(conversation_row.clone()).await?;
+
+        let activity = ActivityLogRow {
+            id: Uuid::new_v4().to_string(),
+            action_type: "ingest".to_string(),
+            description: format!("Ingested post from {}", commit.did),
+            thread_uri: Some(root_uri),
+            metadata_json: Some(
+                serde_json::json!({"post_uri": post_uri, "author_did": commit.did, "content_length": record.text.len()})
+                    .to_string(),
+            ),
+            created_at: Utc::now(),
+        };
+        if let Err(e) = db.log_activity(activity).await {
+            tracing::warn!("Failed to log activity: {}", e);
+        }
 
         tracing::info!("Saved conversation for DID: {}", commit.did);
 

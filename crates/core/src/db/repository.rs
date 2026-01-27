@@ -32,6 +32,32 @@ pub struct SessionRow {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutedAuthorRow {
+    pub did: String,
+    pub muted_at: DateTime<Utc>,
+    pub muted_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterPresetRow {
+    pub id: String,
+    pub name: String,
+    pub filters_json: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityLogRow {
+    pub id: String,
+    pub action_type: String,
+    pub description: String,
+    pub thread_uri: Option<String>,
+    pub metadata_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[async_trait::async_trait]
 pub trait DatabaseRepository: Send + Sync {
     async fn run_migration(&self) -> Result<()>;
@@ -50,6 +76,24 @@ pub trait DatabaseRepository: Send + Sync {
     async fn backup(&self, path: &str) -> Result<u64>;
     async fn restore(&self, path: &str) -> Result<()>;
     async fn vacuum(&self) -> Result<(u64, u64)>;
+
+    async fn search_conversations(
+        &self, query: &str, author_filter: Option<&str>, role_filter: Option<&str>, date_from: Option<DateTime<Utc>>,
+        date_to: Option<DateTime<Utc>>, limit: usize,
+    ) -> Result<Vec<ConversationRow>>;
+    async fn export_all_conversations(&self) -> Result<Vec<ConversationRow>>;
+    async fn export_thread(&self, thread_root_uri: &str) -> Result<Vec<ConversationRow>>;
+    async fn delete_conversations_by_uris(&self, thread_uris: &[String]) -> Result<usize>;
+    async fn delete_old_conversations(&self, days: i64) -> Result<usize>;
+    async fn get_muted_authors(&self) -> Result<Vec<MutedAuthorRow>>;
+    async fn mute_author(&self, did: &str, muted_by: &str) -> Result<()>;
+    async fn unmute_author(&self, did: &str) -> Result<()>;
+    async fn save_filter_preset(&self, preset: FilterPresetRow) -> Result<()>;
+    async fn get_filter_presets(&self, user_did: &str) -> Result<Vec<FilterPresetRow>>;
+    async fn get_conversations_with_length_filter(&self, min_messages: usize, limit: usize) -> Result<Vec<String>>;
+    async fn get_recent_threads(&self, hours: i64, limit: usize) -> Result<Vec<String>>;
+    async fn log_activity(&self, activity: ActivityLogRow) -> Result<()>;
+    async fn get_activity_log(&self, action_type: Option<&str>, limit: usize) -> Result<Vec<ActivityLogRow>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +141,8 @@ impl DatabaseRepository for LibsqlRepository {
     async fn run_migration(&self) -> Result<()> {
         let migration_001 = include_str!("../../migrations/001_init.sql");
         let migration_002 = include_str!("../../migrations/002_add_session.sql");
+        let migration_003 = include_str!("../../migrations/003_add_search_indexes.sql");
+        let migration_004 = include_str!("../../migrations/004_add_filters_and_activity.sql");
 
         for statement in migration_001.split(';') {
             let statement = statement.trim();
@@ -106,6 +152,20 @@ impl DatabaseRepository for LibsqlRepository {
         }
 
         for statement in migration_002.split(';') {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                self.execute(statement, ()).await?;
+            }
+        }
+
+        for statement in migration_003.split(';') {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                self.execute(statement, ()).await?;
+            }
+        }
+
+        for statement in migration_004.split(';') {
             let statement = statement.trim();
             if !statement.is_empty() {
                 self.execute(statement, ()).await?;
@@ -443,6 +503,331 @@ impl DatabaseRepository for LibsqlRepository {
         );
 
         Ok((before_size, after_size))
+    }
+
+    async fn search_conversations(
+        &self, query: &str, author_filter: Option<&str>, role_filter: Option<&str>, date_from: Option<DateTime<Utc>>,
+        date_to: Option<DateTime<Utc>>, limit: usize,
+    ) -> Result<Vec<ConversationRow>> {
+        let escaped_query = query.replace('\'', "''");
+        let mut where_parts = vec![format!(
+            "c.id IN (SELECT id FROM conversations_fts WHERE conversations_fts MATCH '{}')",
+            escaped_query
+        )];
+
+        if let Some(author) = author_filter {
+            let escaped_author = author.replace('\'', "''");
+            where_parts.push(format!("c.author_did = '{}'", escaped_author));
+        }
+
+        if let Some(role) = role_filter {
+            let escaped_role = role.replace('\'', "''");
+            where_parts.push(format!("c.role = '{}'", escaped_role));
+        }
+
+        if let Some(from) = date_from {
+            where_parts.push(format!("c.created_at >= '{}'", from.to_rfc3339()));
+        }
+
+        if let Some(to) = date_to {
+            where_parts.push(format!("c.created_at <= '{}'", to.to_rfc3339()));
+        }
+
+        let sql = format!(
+            r#"
+                SELECT c.id, c.thread_root_uri, c.post_uri, c.parent_uri,
+                       c.author_did, c.role, c.content, c.created_at
+                FROM conversations c
+                WHERE {}
+                ORDER BY c.created_at DESC
+                LIMIT {}
+            "#,
+            where_parts.join(" AND "),
+            limit
+        );
+
+        self.query(&sql, (), |row| {
+            Ok(ConversationRow {
+                id: row.get(0)?,
+                thread_root_uri: row.get(1)?,
+                post_uri: row.get(2)?,
+                parent_uri: row.get(3)?,
+                author_did: row.get(4)?,
+                role: row.get(5)?,
+                content: row.get(6)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<String>(7)?)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            })
+        })
+        .await
+    }
+
+    async fn export_all_conversations(&self) -> Result<Vec<ConversationRow>> {
+        let sql = r#"
+            SELECT id, thread_root_uri, post_uri, parent_uri,
+                   author_did, role, content, created_at
+            FROM conversations
+            ORDER BY created_at DESC
+        "#;
+
+        let rows = self
+            .query(sql, (), |row| {
+                Ok(ConversationRow {
+                    id: row.get(0)?,
+                    thread_root_uri: row.get(1)?,
+                    post_uri: row.get(2)?,
+                    parent_uri: row.get(3)?,
+                    author_did: row.get(4)?,
+                    role: row.get(5)?,
+                    content: row.get(6)?,
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<String>(7)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })
+            .await?;
+
+        Ok(rows)
+    }
+
+    async fn export_thread(&self, thread_root_uri: &str) -> Result<Vec<ConversationRow>> {
+        let sql = r#"
+            SELECT id, thread_root_uri, post_uri, parent_uri,
+                   author_did, role, content, created_at
+            FROM conversations
+            WHERE thread_root_uri = ?
+            ORDER BY created_at ASC
+        "#;
+
+        let rows = self
+            .query(sql, [thread_root_uri], |row| {
+                Ok(ConversationRow {
+                    id: row.get(0)?,
+                    thread_root_uri: row.get(1)?,
+                    post_uri: row.get(2)?,
+                    parent_uri: row.get(3)?,
+                    author_did: row.get(4)?,
+                    role: row.get(5)?,
+                    content: row.get(6)?,
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<String>(7)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })
+            .await?;
+
+        Ok(rows)
+    }
+
+    async fn delete_conversations_by_uris(&self, thread_uris: &[String]) -> Result<usize> {
+        let conn = self.db.connect()?;
+        let mut total_deleted = 0;
+
+        for thread_uri in thread_uris {
+            let sql = "DELETE FROM conversations WHERE thread_root_uri = ?";
+            match conn.execute(sql, [thread_uri.as_str()]).await {
+                Ok(_) => total_deleted += 1,
+                Err(e) => {
+                    tracing::warn!("Failed to delete thread {}: {}", thread_uri, e);
+                }
+            }
+        }
+
+        Ok(total_deleted)
+    }
+
+    async fn delete_old_conversations(&self, days: i64) -> Result<usize> {
+        let cutoff_date = Utc::now() - chrono::Duration::days(days);
+        let sql = "DELETE FROM conversations WHERE created_at < ?";
+
+        let conn = self.db.connect()?;
+        let rows_affected = conn.execute(sql, [cutoff_date.to_rfc3339().as_str()]).await?;
+
+        Ok(rows_affected as usize)
+    }
+
+    async fn get_muted_authors(&self) -> Result<Vec<MutedAuthorRow>> {
+        let sql = r#"
+            SELECT did, muted_at, muted_by
+            FROM muted_authors
+            ORDER BY muted_at DESC
+        "#;
+
+        let rows = self
+            .query(sql, (), |row| {
+                Ok(MutedAuthorRow {
+                    did: row.get(0)?,
+                    muted_at: DateTime::parse_from_rfc3339(&row.get::<String>(1)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    muted_by: row.get(2)?,
+                })
+            })
+            .await?;
+
+        Ok(rows)
+    }
+
+    async fn mute_author(&self, did: &str, muted_by: &str) -> Result<()> {
+        let sql = r#"
+            INSERT OR REPLACE INTO muted_authors (did, muted_at, muted_by)
+            VALUES (?, ?, ?)
+        "#;
+
+        self.execute(sql, params![did, Utc::now().to_rfc3339().as_str(), muted_by])
+            .await
+    }
+
+    async fn unmute_author(&self, did: &str) -> Result<()> {
+        let sql = "DELETE FROM muted_authors WHERE did = ?";
+        self.execute(sql, [did]).await
+    }
+
+    async fn save_filter_preset(&self, preset: FilterPresetRow) -> Result<()> {
+        let sql = r#"
+            INSERT OR REPLACE INTO filter_presets (id, name, filters_json, created_at, created_by)
+            VALUES (?, ?, ?, ?, ?)
+        "#;
+
+        self.execute(
+            sql,
+            params![
+                preset.id.as_str(),
+                preset.name.as_str(),
+                preset.filters_json.as_str(),
+                preset.created_at.to_rfc3339().as_str(),
+                preset.created_by.as_str()
+            ],
+        )
+        .await
+    }
+
+    async fn get_filter_presets(&self, user_did: &str) -> Result<Vec<FilterPresetRow>> {
+        let sql = r#"
+            SELECT id, name, filters_json, created_at, created_by
+            FROM filter_presets
+            WHERE created_by = ?
+            ORDER BY created_at DESC
+        "#;
+
+        let rows = self
+            .query(sql, [user_did], |row| {
+                Ok(FilterPresetRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    filters_json: row.get(2)?,
+                    created_at: DateTime::parse_from_rfc3339(&row.get::<String>(3)?)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    created_by: row.get(4)?,
+                })
+            })
+            .await?;
+
+        Ok(rows)
+    }
+
+    async fn get_conversations_with_length_filter(&self, min_messages: usize, limit: usize) -> Result<Vec<String>> {
+        let sql = r#"
+            SELECT thread_root_uri
+            FROM conversations
+            GROUP BY thread_root_uri
+            HAVING COUNT(*) >= ?
+            ORDER BY MAX(created_at) DESC
+            LIMIT ?
+        "#;
+
+        let threads = self
+            .query(sql, [min_messages as i64, limit as i64], |row| {
+                Ok::<String, anyhow::Error>(row.get(0)?)
+            })
+            .await?;
+
+        Ok(threads)
+    }
+
+    async fn get_recent_threads(&self, hours: i64, limit: usize) -> Result<Vec<String>> {
+        let cutoff = Utc::now() - chrono::Duration::hours(hours);
+        let sql = format!(
+            r#"
+                SELECT DISTINCT thread_root_uri
+                FROM conversations
+                WHERE created_at >= '{}'
+                ORDER BY MAX(created_at) OVER (PARTITION BY thread_root_uri) DESC
+                LIMIT {}
+            "#,
+            cutoff.to_rfc3339(),
+            limit
+        );
+
+        self.query(&sql, (), |row| Ok::<String, anyhow::Error>(row.get(0)?))
+            .await
+    }
+
+    async fn log_activity(&self, activity: ActivityLogRow) -> Result<()> {
+        let sql = r#"
+            INSERT OR REPLACE INTO activity_log (id, action_type, description, thread_uri, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        "#;
+
+        self.execute(
+            sql,
+            params![
+                activity.id.as_str(),
+                activity.action_type.as_str(),
+                activity.description.as_str(),
+                activity.thread_uri.as_deref(),
+                activity.metadata_json.as_deref(),
+                activity.created_at.to_rfc3339().as_str()
+            ],
+        )
+        .await
+    }
+
+    async fn get_activity_log(&self, action_type: Option<&str>, limit: usize) -> Result<Vec<ActivityLogRow>> {
+        let sql = if let Some(action) = action_type {
+            format!(
+                r#"
+                    SELECT id, action_type, description, thread_uri, metadata_json, created_at
+                    FROM activity_log
+                    WHERE action_type = '{}'
+                    ORDER BY created_at DESC
+                    LIMIT {}
+                "#,
+                action.replace("'", "''"),
+                limit
+            )
+        } else {
+            format!(
+                r#"
+                    SELECT id, action_type, description, thread_uri, metadata_json, created_at
+                    FROM activity_log
+                    ORDER BY created_at DESC
+                    LIMIT {}
+                "#,
+                limit
+            )
+        };
+
+        let conn = self.db.connect()?;
+        let mut rows = conn.query(&sql, ()).await?;
+        let mut results = Vec::new();
+
+        while let Some(row) = rows.next().await? {
+            results.push(ActivityLogRow {
+                id: row.get(0)?,
+                action_type: row.get(1)?,
+                description: row.get(2)?,
+                thread_uri: row.get(3)?,
+                metadata_json: row.get(4)?,
+                created_at: DateTime::parse_from_rfc3339(&row.get::<String>(5)?)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            });
+        }
+
+        Ok(results)
     }
 }
 

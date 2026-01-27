@@ -3,9 +3,11 @@ use crate::db::DatabaseRepository;
 use crate::health::{HealthRegistry, JetstreamState};
 use crate::web::handlers::get_metrics;
 use crate::web::handlers::{
-    WebAppState, get_admin, get_chat, get_config, get_dashboard, get_health, get_identities, get_landing, get_login,
-    get_status, get_thread_detail, get_threads, post_chat_send, post_clear_thread, post_login, post_logout, post_pause,
-    post_post, post_resume,
+    WebAppState, get_activity_timeline, get_admin, get_chat, get_config, get_dashboard, get_export_csv,
+    get_export_json, get_filtered_threads, get_health, get_identities, get_landing, get_login, get_search, get_status,
+    get_thread_detail, get_threads, post_bulk_delete, post_chat_send, post_cleanup_old, post_clear_thread, post_login,
+    post_logout, post_mute_author, post_pause, post_post, post_resume, post_save_preset, post_search,
+    post_unmute_author,
 };
 
 use anyhow::Result;
@@ -13,6 +15,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 pub struct Server {
@@ -64,6 +67,17 @@ impl Server {
             .route("/identities", get(get_identities))
             .route("/admin", get(get_admin))
             .route("/config", get(get_config))
+            .route("/search", get(get_search))
+            .route("/api/search", post(post_search))
+            .route("/api/export/conversations.json", get(get_export_json))
+            .route("/api/export/conversations.csv", get(get_export_csv))
+            .route("/api/bulk/delete", post(post_bulk_delete))
+            .route("/api/cleanup/old", post(post_cleanup_old))
+            .route("/api/filter/mute", post(post_mute_author))
+            .route("/api/filter/unmute", post(post_unmute_author))
+            .route("/api/filter/preset/save", post(post_save_preset))
+            .route("/threads/filtered", get(get_filtered_threads))
+            .route("/activity", get(get_activity_timeline))
             .route("/api/status", get(get_status))
             .route("/api/health", get(get_health))
             .route("/api/metrics", get(get_metrics))
@@ -73,6 +87,7 @@ impl Server {
             .route("/api/clear-thread", post(post_clear_thread))
             .route("/api/login", post(post_login))
             .route("/api/chat/send", post(post_chat_send))
+            .nest_service("/static", ServeDir::new("crates/core/src/web/static"))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())
             .with_state(self.app_state.clone())

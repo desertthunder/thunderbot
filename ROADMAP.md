@@ -185,3 +185,15 @@ See `docs/web-dashboard.md` for environment variable reference.
     - Deployment guide: local, Docker, Fly.io
     - Backup and restore procedures
     - Troubleshooting section
+
+## Parking Lot
+
+### Dashboard
+
+1. **Real-time Updates:** Use WebSockets for live activity feed.
+2. **Bulk Operations:** Add bulk export and archive functionality.
+3. **Activity Coverage:** Extend logging to include Bluesky API calls, rate limit hits, and retry attempts.
+4. **Export Formats:** XML, Excel formats.
+5. **Pagination:** Add pagination to search and activity timeline for large result sets.
+6. **Filter UX:** Sliders, toggles, and visual feedback.
+7. **Search Relevance:** Better ranking algorithm with BM25.

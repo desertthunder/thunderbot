@@ -4,6 +4,7 @@ pub mod thread;
 
 pub use identity::{IdentityResolver, IdentityResolverConfig};
 pub use repository::{
-    ConversationRow, DatabaseRepository, DatabaseStats, Db, IdentityRow, LibsqlRepository, SessionRow,
+    ActivityLogRow, ConversationRow, DatabaseRepository, DatabaseStats, Db, FilterPresetRow, IdentityRow,
+    LibsqlRepository, MutedAuthorRow, SessionRow,
 };
 pub use thread::{ThreadContext, ThreadContextBuilder};
