@@ -156,7 +156,7 @@ mod tests {
     fn test_client_creation() {
         let client = GeminiClient::new("test-key".to_string(), None);
         assert_eq!(client.api_key, "test-key");
-        assert_eq!(client.model, "gemini-3.0-pro");
+        assert_eq!(client.model, "gemini-3-pro-preview");
     }
 
     #[test]
