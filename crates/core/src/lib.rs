@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod bsky;
+pub mod control;
 pub mod db;
 pub mod error;
 pub mod gemini;

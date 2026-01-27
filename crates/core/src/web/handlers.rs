@@ -1,5 +1,5 @@
 use crate::bsky::BskyClient;
-use crate::db::repository::FilterPresetRow;
+use crate::db::types::FilterPresetRow;
 use crate::db::{ActivityLogRow, DatabaseRepository};
 use crate::health::{
     ComponentHealth, DatabaseHealthCheck, HealthCheck, HealthRegistry, HealthStatus, JetstreamHealthCheck,

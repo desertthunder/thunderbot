@@ -1,4 +1,5 @@
-use super::repository::{Db, IdentityRow};
+use super::types::IdentityRow;
+use super::Db;
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use reqwest::Client;

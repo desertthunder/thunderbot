@@ -3,7 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use maud::{Markup, PreEscaped, html};
 
 use crate::ConversationRow;
-use crate::db::repository::ActivityLogRow;
+use crate::db::types::ActivityLogRow;
 
 pub enum PageSection {
     Dashboard,

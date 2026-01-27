@@ -1,10 +1,16 @@
 pub mod identity;
-pub mod repository;
+pub mod libsql;
 pub mod thread;
+pub mod traits;
+pub mod types;
 
 pub use identity::{IdentityResolver, IdentityResolverConfig};
-pub use repository::{
-    ActivityLogRow, ConversationRow, DatabaseRepository, DatabaseStats, Db, FilterPresetRow, IdentityRow,
-    LibsqlRepository, MutedAuthorRow, SessionRow,
-};
+pub use libsql::LibsqlRepository;
+pub use traits::DatabaseRepository;
 pub use thread::{ThreadContext, ThreadContextBuilder};
+pub use types::{
+    ActivityLogRow, ConversationRow, DatabaseStats, FilterPresetRow, IdentityRow, MutedAuthorRow,
+    SessionRow,
+};
+
+pub type Db = std::sync::Arc<dyn DatabaseRepository>;

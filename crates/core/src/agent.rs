@@ -1,4 +1,4 @@
-use crate::db::repository::ActivityLogRow;
+use crate::db::types::ActivityLogRow;
 
 use super::bsky::BskyClient;
 use super::db::{ConversationRow, Db, IdentityResolver, IdentityResolverConfig, ThreadContextBuilder};

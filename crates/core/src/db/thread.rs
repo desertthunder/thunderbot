@@ -1,4 +1,4 @@
-use super::repository::Db;
+use super::Db;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 

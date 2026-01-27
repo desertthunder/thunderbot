@@ -1,4 +1,4 @@
-use crate::db::repository::ActivityLogRow;
+use crate::db::types::ActivityLogRow;
 use crate::db::{ConversationRow, Db, ThreadContextBuilder};
 use crate::jetstream::event::{JetstreamEvent, PostRecord};
 
