@@ -24,7 +24,7 @@ impl DlqManager {
     pub fn start_auto_retry(&self) {
         let manager = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Check every minute
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
 
             loop {
                 interval.tick().await;
@@ -62,7 +62,7 @@ impl DlqManager {
     pub fn start_purge_task(&self) {
         let db = self.db.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(86400)); // Daily
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(86400));
 
             loop {
                 interval.tick().await;

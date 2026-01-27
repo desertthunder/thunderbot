@@ -24,7 +24,7 @@ impl SessionManager {
     pub async fn start_proactive_refresh(&self) {
         let manager = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // Every 5 minutes
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
 
             loop {
                 interval.tick().await;

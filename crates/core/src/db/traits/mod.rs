@@ -1,8 +1,3 @@
-//! Focused repository traits for database operations.
-//!
-//! This module splits the monolithic DatabaseRepository into smaller, focused traits
-//! organized by domain responsibility.
-
 pub mod activity;
 pub mod blocklist;
 pub mod control;
@@ -38,9 +33,8 @@ use async_trait::async_trait;
 
 /// Combined database repository that aggregates all domain-specific traits.
 ///
-/// This trait requires all specialized repository traits, providing a single
-/// interface for complete database access while maintaining clear separation
-/// of concerns in implementation.
+/// This trait requires all specialized repository traits, providing a single interface
+/// for complete database access while maintaining clear separation of concerns in implementation.
 #[async_trait]
 pub trait DatabaseRepository:
     Send

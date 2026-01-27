@@ -4,13 +4,16 @@ use crate::processor::EventProcessor;
 
 use std::sync::Arc;
 
-pub async fn listen(filter_did: Option<String>, duration: Option<u64>) -> anyhow::Result<()> {
+pub async fn listen(
+    filter_did: Option<String>, duration: Option<u64>,
+    jetstream_state: std::sync::Arc<tokio::sync::RwLock<crate::health::JetstreamState>>,
+) -> anyhow::Result<()> {
     let client = JetstreamClient::new();
     let filter = JetstreamFilter::new(filter_did);
 
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let db: Db = Arc::new(LibsqlRepository::new(&db_url).await?);
-    let processor = EventProcessor::new(100, db);
+    let processor = EventProcessor::new(100, db, jetstream_state);
     let stream = client.connect().await?;
     let mut stream = stream;
 
@@ -41,13 +44,15 @@ pub async fn listen(filter_did: Option<String>, duration: Option<u64>) -> anyhow
     Ok(())
 }
 
-pub async fn replay(cursor: i64) -> anyhow::Result<()> {
+pub async fn replay(
+    cursor: i64, jetstream_state: std::sync::Arc<tokio::sync::RwLock<crate::health::JetstreamState>>,
+) -> anyhow::Result<()> {
     let client = JetstreamClient::new();
     let filter = JetstreamFilter::new(None);
 
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "file:bot.db".to_string());
     let db: Db = Arc::new(LibsqlRepository::new(&db_url).await?);
-    let processor = EventProcessor::new(100, db);
+    let processor = EventProcessor::new(100, db, jetstream_state);
     let stream = client.connect_with_cursor(cursor).await?;
     let mut stream = stream;
 

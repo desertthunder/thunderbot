@@ -1,16 +1,13 @@
 //! libSQL implementation of all database repository traits.
-//!
-//! The main `LibsqlRepository` struct is defined here, with individual trait
-//! implementations split into separate modules for better compilation organization.
 
-mod libsql_activity;
-mod libsql_control;
-mod libsql_identity;
-mod libsql_operational;
-mod libsql_response_queue;
-mod libsql_search;
-mod libsql_session;
-mod libsql_thread;
+mod activity;
+mod control;
+mod identity;
+mod operational;
+mod resp_queue;
+mod search;
+mod session;
+mod thread;
 
 use anyhow::Result;
 use libsql::{Builder, Database};

@@ -1,4 +1,3 @@
-use crate::control::DeadLetterItem;
 use crate::db::types::ActivityLogRow;
 use crate::db::{ConversationRow, Db, ThreadContextBuilder};
 use crate::jetstream::event::{JetstreamEvent, PostRecord};
@@ -12,33 +11,55 @@ use uuid::Uuid;
 pub struct EventProcessor {
     event_tx: mpsc::Sender<JetstreamEvent>,
     db: Db,
+    jetstream_state: std::sync::Arc<tokio::sync::RwLock<crate::health::JetstreamState>>,
 }
 
 impl EventProcessor {
-    pub fn new(buffer_size: usize, db: Db) -> Self {
+    pub fn new(
+        buffer_size: usize, db: Db, jetstream_state: std::sync::Arc<tokio::sync::RwLock<crate::health::JetstreamState>>,
+    ) -> Self {
         let (event_tx, mut event_rx) = mpsc::channel(buffer_size);
         let db_clone = db.clone();
+        let state_clone = jetstream_state.clone();
 
         tokio::spawn(async move {
+            let mut last_calc = std::time::Instant::now();
+            let mut processed_in_window = 0;
+
             while let Some(event) = event_rx.recv().await {
+                {
+                    let mut state = state_clone.write().await;
+                    state.queue_depth = event_rx.len();
+                    state.record_event();
+                }
+
                 if let Err(e) = Self::process_event(&event, &db_clone).await {
                     tracing::error!("Error processing event: {}", e);
-                    let dlq_item = DeadLetterItem {
-                        id: Uuid::new_v4().to_string(),
+                    let dlq_item = crate::control::DeadLetterItem {
+                        id: uuid::Uuid::new_v4().to_string(),
                         event_json: serde_json::to_string(&event).unwrap_or_default(),
                         error_message: e.to_string(),
                         retry_count: 0,
                         last_retry_at: None,
-                        created_at: Utc::now(),
+                        created_at: chrono::Utc::now(),
                     };
                     if let Err(dlq_err) = db_clone.add_to_dlq(dlq_item).await {
                         tracing::error!("Failed to send to DLQ: {}", dlq_err);
                     }
                 }
+
+                processed_in_window += 1;
+
+                if last_calc.elapsed().as_secs() >= 1 {
+                    let mut state = state_clone.write().await;
+                    state.events_per_second = processed_in_window as f64 / last_calc.elapsed().as_secs_f64();
+                    processed_in_window = 0;
+                    last_calc = std::time::Instant::now();
+                }
             }
         });
 
-        Self { event_tx, db }
+        Self { event_tx, db, jetstream_state }
     }
 
     pub async fn send(&self, event: JetstreamEvent) -> anyhow::Result<()> {

@@ -13,6 +13,7 @@ pub enum PageSection {
     Config,
     Activity,
     Search,
+    Controls,
 }
 
 impl PageSection {
@@ -25,6 +26,7 @@ impl PageSection {
             PageSection::Config => "/config",
             PageSection::Activity => "/activity",
             PageSection::Search => "/search",
+            PageSection::Controls => "/controls",
         }
     }
 }
@@ -328,12 +330,14 @@ pub fn base_layout(title: &str, section: &PageSection, content: &Markup, handle:
                                 @let config_class = if matches!(section, PageSection::Config) { "active" } else { "" };
                                 @let activity_class = if matches!(section, PageSection::Activity) { "active" } else { "" };
                                 @let search_class = if matches!(section, PageSection::Search) { "active" } else { "" };
+                                @let controls_class = if matches!(section, PageSection::Controls) { "active" } else { "" };
 
                                 li { a href=(PageSection::Dashboard.path()) class=(dashboard_class) { "Status" } }
                                 li { a href=(PageSection::Chat.path()) class=(chat_class) { "Chat" } }
                                 li { a href=(PageSection::Threads.path()) class=(threads_class) { "Threads" } }
                                 li { a href=(PageSection::Activity.path()) class=(activity_class) { "Activity" } }
                                 li { a href=(PageSection::Search.path()) class=(search_class) { "Search" } }
+                                li { a href=(PageSection::Controls.path()) class=(controls_class) { "Controls" } }
                                 li { a href=(PageSection::Broadcast.path()) class=(broadcast_class) { "Broadcast" } }
                                 li { a href=(PageSection::Config.path()) class=(config_class) { "Config" } }
                             }

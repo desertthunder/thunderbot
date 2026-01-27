@@ -1,5 +1,4 @@
 //! Handlers for operational controls endpoints.
-
 use super::handlers::WebAppState;
 use crate::control::{BlockType, QuietHoursWindow, ReplyLimitsConfig, ResponseStatus};
 
@@ -241,8 +240,7 @@ pub async fn get_pending_responses(State(state): State<WebAppState>) -> impl Int
         }
     };
 
-    // TODO: Check preview mode state from agent
-    let preview_enabled = false;
+    let preview_enabled = state.agent.is_preview_mode().await;
 
     Html(maud::html! {
         h2 { "Response Preview Queue" }
@@ -389,8 +387,12 @@ pub async fn post_discard_response(
     Ok(Redirect::to("/controls/preview").into_response())
 }
 
-pub async fn post_toggle_preview_mode(State(_state): State<WebAppState>) -> impl IntoResponse {
-    // TODO: Implement preview mode toggle
+pub async fn post_toggle_preview_mode(State(state): State<WebAppState>) -> impl IntoResponse {
+    let current_mode = state.agent.is_preview_mode().await;
+    state.agent.set_preview_mode(!current_mode).await;
+
+    tracing::info!("Preview mode toggled to: {}", !current_mode);
+
     Redirect::to("/controls/preview").into_response()
 }
 
@@ -778,9 +780,36 @@ pub async fn get_export_blocklist(State(state): State<WebAppState>) -> Response 
     }
 }
 
-pub async fn post_import_blocklist() -> impl IntoResponse {
-    // TODO: Implement blocklist import
-    StatusCode::NOT_IMPLEMENTED.into_response()
+pub async fn post_import_blocklist(
+    State(state): State<WebAppState>, mut multipart: axum::extract::Multipart,
+) -> Result<Response, StatusCode> {
+    let mut entries = Vec::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if let Some(name) = field.name()
+            && name == "file"
+        {
+            let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+            entries = serde_json::from_slice::<Vec<crate::control::BlocklistEntry>>(&data)
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let count = entries.len();
+    for entry in entries {
+        if let Err(e) = state.db.add_to_blocklist(entry).await {
+            tracing::error!("Failed to import blocklist entry: {}", e);
+        }
+    }
+
+    tracing::info!("Imported {} blocklist entries", count);
+
+    Ok(Redirect::to("/controls/blocklist").into_response())
 }
 
 #[derive(Deserialize)]
@@ -861,12 +890,10 @@ pub async fn post_update_bio(
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct MaintenanceForm {
     duration: u64,
 }
 
-#[allow(dead_code)]
 pub async fn post_maintenance_announcement(
     State(state): State<WebAppState>, Form(form): Form<MaintenanceForm>,
 ) -> Result<Response, StatusCode> {
@@ -977,14 +1004,13 @@ pub async fn post_retry_dlq_item(
             }
 
             tracing::info!("Retried DLQ item: {}", form.id);
+            Ok(Redirect::to("/controls/dlq").into_response())
         }
         Err(e) => {
             tracing::error!("Failed to parse event JSON: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    Ok(Redirect::to("/controls/dlq").into_response())
 }
 
 pub async fn post_bulk_retry_dlq(State(state): State<WebAppState>) -> Result<Response, StatusCode> {
@@ -1036,45 +1062,44 @@ pub async fn get_controls_landing() -> impl IntoResponse {
     Html(
         maud::html! {
             h2 { "Operational Controls" }
-
             p { "Monitor and control bot behavior, rate limits, and system health." }
 
-            .stats-grid {
+           .stats-grid {
                 a.stat-card href="/controls/rate-limits" {
                     h3 { "Rate Limits" }
-                                    p { "View Bluesky API rate limit usage and history" }
+                    p { "View Bluesky API rate limit usage and history" }
                 }
                 a.stat-card href="/controls/event-queue" {
                     h3 { "Event Queue" }
-                                    p { "Monitor event processing status and queue depth" }
+                    p { "Monitor event processing status and queue depth" }
                 }
                 a.stat-card href="/controls/session" {
                     h3 { "Session Management" }
-                                    p { "View and refresh Bluesky session tokens" }
+                    p { "View and refresh Bluesky session tokens" }
                 }
                 a.stat-card href="/controls/preview" {
                     h3 { "Response Preview" }
-                                    p { "Review and approve pending responses" }
+                    p { "Review and approve pending responses" }
                 }
                 a.stat-card href="/controls/quiet-hours" {
                     h3 { "Quiet Hours" }
-                                    p { "Configure time windows for manual approval" }
+                    p { "Configure time windows for manual approval" }
                 }
                 a.stat-card href="/controls/reply-limits" {
                     h3 { "Reply Limits" }
-                                    p { "Set limits on thread replies and cooldowns" }
+                    p { "Set limits on thread replies and cooldowns" }
                 }
                 a.stat-card href="/controls/blocklist" {
                     h3 { "Blocklist" }
-                                    p { "Block authors or domains from triggering replies" }
+                    p { "Block authors or domains from triggering replies" }
                 }
                 a.stat-card href="/controls/status-broadcast" {
                     h3 { "Status Broadcast" }
-                                    p { "Post status updates and maintenance announcements" }
+                    p { "Post status updates and maintenance announcements" }
                 }
                 a.stat-card href="/controls/dlq" {
                     h3 { "Dead Letter Queue" }
-                                    p { "View and retry failed events" }
+                    p { "View and retry failed events" }
                 }
             }
         }

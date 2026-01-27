@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-01-27
+
+### Added
+
+- Full-text conversation search, activity timelines, thread filtering, and bulk data export in dashboard.
+- Operational controls for real-time rate limit monitoring, event processing visibility, and dead letter queue management.
+- Runtime configuration for quiet hours, reply limits, blocklists, and manual session refresh controls.
+
 ## [0.8.0] - 2026-01-26
 
 ### Added

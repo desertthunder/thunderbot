@@ -30,13 +30,13 @@ async fn handle_jetstream(command: &JetstreamCommands) -> anyhow::Result<()> {
     match command {
         JetstreamCommands::Listen { filter_did, duration } => {
             tracing::info!("Starting Jetstream listener");
-            tracing::info!("Filter DID: {:?}", filter_did);
-            tracing::info!("Duration: {:?}", duration);
-            jetstream::listen(filter_did.clone(), *duration).await
+            let state = Arc::new(tokio::sync::RwLock::new(thunderbot_core::health::JetstreamState::new()));
+            jetstream::listen(filter_did.clone(), *duration, state).await
         }
         JetstreamCommands::Replay { cursor } => {
             tracing::info!("Replaying Jetstream from cursor: {}", cursor);
-            jetstream::replay(*cursor).await
+            let state = Arc::new(tokio::sync::RwLock::new(thunderbot_core::health::JetstreamState::new()));
+            jetstream::replay(*cursor, state).await
         }
     }
 }
@@ -137,7 +137,6 @@ async fn handle_bsky(cli: &Cli, command: &cli::BskyCommands) -> anyhow::Result<(
         cli::BskyCommands::GetPost { uri } => {
             let post = client.get_post(uri).await?;
             let post_record = post.value;
-
             let text = post_record.get("text").and_then(|t| t.as_str()).unwrap_or("");
 
             let author_did = post_record
@@ -356,23 +355,47 @@ async fn handle_serve(cli: &Cli) -> anyhow::Result<()> {
     let pds_host = std::env::var("PDS_HOST").unwrap_or_else(|_| "https://bsky.social".to_string());
     let dashboard_token = std::env::var("DASHBOARD_TOKEN").unwrap_or_else(|_| "changeme".to_string());
 
-    echo::info(&format!("Starting web server with token: {}", dashboard_token));
+    echo::info(&format!("Starting ThunderBot server with token: {}", dashboard_token));
 
     if cli.dry_run {
-        echo::warn("DRY-RUN MODE: Posts will be logged but not sent to Bluesky");
+        echo::warn("DRY-RUN MODE enabled");
     }
 
     let repo = Arc::new(thunderbot_core::LibsqlRepository::new(&db_url).await?);
     let bsky_client = Arc::new(BskyClient::new(&pds_host, Some(repo.clone())));
-
     bsky_client.load_from_database().await;
 
-    let health = Arc::new(thunderbot_core::HealthRegistry::new());
-    let server = thunderbot_core::Server::new(repo, bsky_client, health).with_dry_run(cli.dry_run);
+    let own_did = bsky_client
+        .get_session()
+        .await
+        .map(|s| s.did.clone())
+        .unwrap_or_else(|| "did:plc:placeholder".to_string());
 
-    echo::success("Web server starting on http://127.0.0.1:3000");
-    echo::info("Use the following Authorization header:");
-    echo::info(&format!("  Authorization: Bearer {}", dashboard_token));
+    let agent = Arc::new(Agent::from_clients(bsky_client.clone(), repo.clone(), own_did, None)?);
+
+    let health = Arc::new(thunderbot_core::HealthRegistry::new());
+    let server = thunderbot_core::Server::new(repo.clone(), bsky_client.clone(), agent.clone(), health)
+        .with_dry_run(cli.dry_run);
+
+    let jetstream_state = server.get_jetstream_state();
+    let (session_mgr, _policy, _broadcaster) = server.get_control_components();
+
+    let session_mgr_clone = session_mgr.clone();
+    tokio::spawn(async move {
+        tracing::info!("Starting proactive session refresh task");
+        session_mgr_clone.start_proactive_refresh().await;
+    });
+
+    let jetstream_state_clone = jetstream_state.clone();
+    tokio::spawn(async move {
+        tracing::info!("Starting Jetstream listener task");
+        if let Err(e) = thunderbot_core::listen(None, None, jetstream_state_clone).await {
+            tracing::error!("Jetstream listener failed: {}", e);
+        }
+    });
+
+    echo::success("All components initialized and running");
+    echo::info("Web server: http://127.0.0.1:3000");
 
     server.serve().await
 }

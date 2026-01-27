@@ -2,15 +2,7 @@ use crate::bsky::BskyClient;
 use crate::control::{PolicyEnforcer, SessionManager, StatusBroadcaster};
 use crate::db::DatabaseRepository;
 use crate::health::{HealthRegistry, JetstreamState};
-use crate::web::controls::*;
-use crate::web::handlers::get_metrics;
-use crate::web::handlers::{
-    WebAppState, get_activity_timeline, get_admin, get_chat, get_config, get_dashboard, get_export_csv,
-    get_export_json, get_filtered_threads, get_health, get_identities, get_landing, get_login, get_search, get_status,
-    get_thread_detail, get_threads, post_bulk_delete, post_chat_send, post_cleanup_old, post_clear_thread, post_login,
-    post_logout, post_mute_author, post_pause, post_post, post_resume, post_save_preset, post_search,
-    post_unmute_author,
-};
+use crate::web::{controls, handlers};
 
 use anyhow::Result;
 use axum::Router;
@@ -21,14 +13,17 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 pub struct Server {
-    app_state: WebAppState,
+    app_state: handlers::WebAppState,
     address: String,
     port: u16,
     dry_run: bool,
 }
 
 impl Server {
-    pub fn new(db: Arc<dyn DatabaseRepository>, bsky_client: Arc<BskyClient>, health: Arc<HealthRegistry>) -> Self {
+    pub fn new(
+        db: Arc<dyn DatabaseRepository>, bsky_client: Arc<BskyClient>, agent: Arc<crate::Agent>,
+        health: Arc<HealthRegistry>,
+    ) -> Self {
         let jetstream_state = Arc::new(tokio::sync::RwLock::new(JetstreamState::new()));
         let session_manager = Arc::new(SessionManager::new(bsky_client.clone(), db.clone()));
         let policy_enforcer = Arc::new(PolicyEnforcer::new(db.clone()));
@@ -36,7 +31,7 @@ impl Server {
         let event_sender = None;
 
         Self {
-            app_state: WebAppState {
+            app_state: handlers::WebAppState {
                 db,
                 bsky_client,
                 health,
@@ -45,6 +40,7 @@ impl Server {
                 policy_enforcer,
                 broadcaster,
                 event_sender,
+                agent,
             },
             address: "127.0.0.1".to_string(),
             port: 3000,
@@ -77,6 +73,11 @@ impl Server {
         self.app_state.event_sender = Some(sender);
     }
 
+    /// Get the jetstream state for monitoring and metrics.
+    pub fn get_jetstream_state(&self) -> Arc<tokio::sync::RwLock<JetstreamState>> {
+        self.app_state.jetstream_state.clone()
+    }
+
     /// Get references to control components for use in other parts of the application.
     pub fn get_control_components(&self) -> (Arc<SessionManager>, Arc<PolicyEnforcer>, Arc<StatusBroadcaster>) {
         (
@@ -88,66 +89,67 @@ impl Server {
 
     pub fn build_router(&self) -> Router {
         Router::new()
-            .route("/", get(get_landing))
-            .route("/dashboard", get(get_dashboard))
-            .route("/login", get(get_login))
-            .route("/logout", post(post_logout))
-            .route("/chat", get(get_chat))
-            .route("/threads", get(get_threads))
-            .route("/thread/:thread_id", get(get_thread_detail))
-            .route("/identities", get(get_identities))
-            .route("/admin", get(get_admin))
-            .route("/config", get(get_config))
-            .route("/search", get(get_search))
-            .route("/api/search", post(post_search))
-            .route("/api/export/conversations.json", get(get_export_json))
-            .route("/api/export/conversations.csv", get(get_export_csv))
-            .route("/api/bulk/delete", post(post_bulk_delete))
-            .route("/api/cleanup/old", post(post_cleanup_old))
-            .route("/api/filter/mute", post(post_mute_author))
-            .route("/api/filter/unmute", post(post_unmute_author))
-            .route("/api/filter/preset/save", post(post_save_preset))
-            .route("/threads/filtered", get(get_filtered_threads))
-            .route("/activity", get(get_activity_timeline))
-            .route("/api/status", get(get_status))
-            .route("/api/health", get(get_health))
-            .route("/api/metrics", get(get_metrics))
-            .route("/api/post", post(post_post))
-            .route("/api/pause", post(post_pause))
-            .route("/api/resume", post(post_resume))
-            .route("/api/clear-thread", post(post_clear_thread))
-            .route("/api/login", post(post_login))
-            .route("/api/chat/send", post(post_chat_send))
-            .route("/controls", get(get_controls_landing))
-            .route("/controls/rate-limits", get(get_rate_limits))
-            .route("/api/rate-limit-history", get(get_rate_limit_history_data))
-            .route("/controls/event-queue", get(get_event_queue_status))
-            .route("/api/pause-events", post(post_pause_events))
-            .route("/api/resume-events", post(post_resume_events))
-            .route("/controls/session", get(get_session_info))
-            .route("/api/session/refresh", post(post_refresh_session))
-            .route("/controls/preview", get(get_pending_responses))
-            .route("/api/preview/approve", post(post_approve_response))
-            .route("/api/preview/edit", post(post_edit_response))
-            .route("/api/preview/discard", post(post_discard_response))
-            .route("/api/preview/toggle", post(post_toggle_preview_mode))
-            .route("/controls/quiet-hours", get(get_quiet_hours))
-            .route("/api/quiet-hours/save", post(post_save_quiet_hours))
-            .route("/api/quiet-hours/delete", post(post_delete_quiet_hours))
-            .route("/controls/reply-limits", get(get_reply_limits))
-            .route("/api/reply-limits/update", post(post_update_reply_limits))
-            .route("/controls/blocklist", get(get_blocklist))
-            .route("/api/blocklist/add", post(post_block_author))
-            .route("/api/blocklist/remove", post(post_unblock_author))
-            .route("/api/blocklist/export", get(get_export_blocklist))
-            .route("/api/blocklist/import", post(post_import_blocklist))
-            .route("/controls/status-broadcast", get(get_status_broadcast))
-            .route("/api/status/post", post(post_status_update))
-            .route("/api/status/bio", post(post_update_bio))
-            .route("/controls/dlq", get(get_dead_letter_queue))
-            .route("/api/dlq/retry", post(post_retry_dlq_item))
-            .route("/api/dlq/bulk-retry", post(post_bulk_retry_dlq))
-            .route("/api/dlq/purge", post(post_purge_dlq))
+            .route("/", get(handlers::get_landing))
+            .route("/dashboard", get(handlers::get_dashboard))
+            .route("/login", get(handlers::get_login))
+            .route("/logout", post(handlers::post_logout))
+            .route("/chat", get(handlers::get_chat))
+            .route("/threads", get(handlers::get_threads))
+            .route("/thread/:thread_id", get(handlers::get_thread_detail))
+            .route("/identities", get(handlers::get_identities))
+            .route("/admin", get(handlers::get_admin))
+            .route("/config", get(handlers::get_config))
+            .route("/search", get(handlers::get_search))
+            .route("/api/search", post(handlers::post_search))
+            .route("/api/export/conversations.json", get(handlers::get_export_json))
+            .route("/api/export/conversations.csv", get(handlers::get_export_csv))
+            .route("/api/bulk/delete", post(handlers::post_bulk_delete))
+            .route("/api/cleanup/old", post(handlers::post_cleanup_old))
+            .route("/api/filter/mute", post(handlers::post_mute_author))
+            .route("/api/filter/unmute", post(handlers::post_unmute_author))
+            .route("/api/filter/preset/save", post(handlers::post_save_preset))
+            .route("/threads/filtered", get(handlers::get_filtered_threads))
+            .route("/activity", get(handlers::get_activity_timeline))
+            .route("/api/status", get(handlers::get_status))
+            .route("/api/health", get(handlers::get_health))
+            .route("/api/metrics", get(handlers::get_metrics))
+            .route("/api/post", post(handlers::post_post))
+            .route("/api/pause", post(handlers::post_pause))
+            .route("/api/resume", post(handlers::post_resume))
+            .route("/api/clear-thread", post(handlers::post_clear_thread))
+            .route("/api/login", post(handlers::post_login))
+            .route("/api/chat/send", post(handlers::post_chat_send))
+            .route("/controls", get(controls::get_controls_landing))
+            .route("/controls/rate-limits", get(controls::get_rate_limits))
+            .route("/api/rate-limit-history", get(controls::get_rate_limit_history_data))
+            .route("/controls/event-queue", get(controls::get_event_queue_status))
+            .route("/api/pause-events", post(controls::post_pause_events))
+            .route("/api/resume-events", post(controls::post_resume_events))
+            .route("/controls/session", get(controls::get_session_info))
+            .route("/api/session/refresh", post(controls::post_refresh_session))
+            .route("/controls/preview", get(controls::get_pending_responses))
+            .route("/api/preview/approve", post(controls::post_approve_response))
+            .route("/api/preview/edit", post(controls::post_edit_response))
+            .route("/api/preview/discard", post(controls::post_discard_response))
+            .route("/api/preview/toggle", post(controls::post_toggle_preview_mode))
+            .route("/controls/quiet-hours", get(controls::get_quiet_hours))
+            .route("/api/quiet-hours/save", post(controls::post_save_quiet_hours))
+            .route("/api/quiet-hours/delete", post(controls::post_delete_quiet_hours))
+            .route("/controls/reply-limits", get(controls::get_reply_limits))
+            .route("/api/reply-limits/update", post(controls::post_update_reply_limits))
+            .route("/controls/blocklist", get(controls::get_blocklist))
+            .route("/api/blocklist/add", post(controls::post_block_author))
+            .route("/api/blocklist/remove", post(controls::post_unblock_author))
+            .route("/api/blocklist/export", get(controls::get_export_blocklist))
+            .route("/api/blocklist/import", post(controls::post_import_blocklist))
+            .route("/controls/status-broadcast", get(controls::get_status_broadcast))
+            .route("/api/status/post", post(controls::post_status_update))
+            .route("/api/status/bio", post(controls::post_update_bio))
+            .route("/api/status/maintenance", post(controls::post_maintenance_announcement))
+            .route("/controls/dlq", get(controls::get_dead_letter_queue))
+            .route("/api/dlq/retry", post(controls::post_retry_dlq_item))
+            .route("/api/dlq/bulk-retry", post(controls::post_bulk_retry_dlq))
+            .route("/api/dlq/purge", post(controls::post_purge_dlq))
             .nest_service("/static", ServeDir::new("crates/core/src/web/static"))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())

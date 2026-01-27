@@ -44,6 +44,8 @@ pub struct WebAppState {
     pub broadcaster: Arc<StatusBroadcaster>,
     /// Event sender for DLQ retry (None if jetstream not running)
     pub event_sender: Option<tokio::sync::mpsc::Sender<crate::jetstream::event::JetstreamEvent>>,
+    /// Agent reference for operational control (preview mode, etc.)
+    pub agent: Arc<crate::Agent>,
 }
 
 #[derive(Deserialize)]
@@ -547,9 +549,7 @@ pub async fn get_health(State(state): State<WebAppState>) -> Response {
 
     match DatabaseHealthCheck::new(state.db.clone()).check().await {
         Ok(health) => report = report.with_check("database", health),
-        Err(e) => {
-            report = report.with_check("database", ComponentHealth::unhealthy("database", e.to_string()));
-        }
+        Err(e) => report = report.with_check("database", ComponentHealth::unhealthy("database", e.to_string())),
     }
 
     match JetstreamHealthCheck::new(state.jetstream_state.clone()).check().await {
@@ -727,7 +727,6 @@ pub async fn post_bulk_delete(
     match state.db.delete_conversations_by_uris(&form.thread_uris).await {
         Ok(count) => {
             tracing::info!("Deleted {} threads", count);
-
             let activity = ActivityLogRow {
                 id: Uuid::new_v4().to_string(),
                 action_type: "bulk_delete".to_string(),
@@ -736,8 +735,8 @@ pub async fn post_bulk_delete(
                 metadata_json: Some(serde_json::json!({"thread_count": count, "uris": form.thread_uris}).to_string()),
                 created_at: Utc::now(),
             };
-            let _ = state.db.log_activity(activity).await;
 
+            let _ = state.db.log_activity(activity).await;
             Ok(Redirect::to("/threads").into_response())
         }
         Err(e) => {
@@ -753,7 +752,6 @@ pub async fn post_cleanup_old(
     match state.db.delete_old_conversations(form.days).await {
         Ok(count) => {
             tracing::info!("Cleaned up {} conversations older than {} days", count, form.days);
-
             let activity = ActivityLogRow {
                 id: Uuid::new_v4().to_string(),
                 action_type: "cleanup".to_string(),
@@ -762,8 +760,8 @@ pub async fn post_cleanup_old(
                 metadata_json: Some(serde_json::json!({"conversation_count": count, "days": form.days}).to_string()),
                 created_at: Utc::now(),
             };
-            let _ = state.db.log_activity(activity).await;
 
+            let _ = state.db.log_activity(activity).await;
             Ok(Redirect::to("/threads").into_response())
         }
         Err(e) => {
