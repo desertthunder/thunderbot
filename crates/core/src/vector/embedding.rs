@@ -40,8 +40,7 @@ struct GeminiError {
 
 #[derive(Debug, Deserialize)]
 struct GeminiErrorDetail {
-    /// TODO: use or remove
-    _code: i32,
+    code: i32,
     message: String,
     status: String,
 }
@@ -118,10 +117,11 @@ impl GeminiEmbeddingProvider {
 
                         if let Ok(error_response) = serde_json::from_str::<GeminiError>(&error_text) {
                             return Err(anyhow!(
-                                "Gemini API error ({}): {} - {}",
+                                "Gemini API error ({}): {} - {} (code: {})",
                                 status,
                                 error_response.error.status,
-                                error_response.error.message
+                                error_response.error.message,
+                                error_response.error.code
                             ));
                         } else {
                             return Err(anyhow!("Gemini API error ({}): {}", status, error_text));

@@ -12,7 +12,6 @@ pub struct PromptBuilder {
 }
 
 impl PromptBuilder {
-    /// TODO: Make this configurable or load from a file
     const DEFAULT_SYSTEM_INSTRUCTION: &'static str = r#"You are a helpful, stateful AI agent on Bluesky.
     You are persistent, friendly, and engage in meaningful conversations.
     Keep your responses concise (under 280 characters when possible).
@@ -21,12 +20,11 @@ impl PromptBuilder {
     pub fn new(
         thread_builder: ThreadContextBuilder, identity_resolver: IdentityResolver, system_instruction: Option<String>,
     ) -> Self {
-        Self {
-            thread_builder,
-            identity_resolver,
-            system_instruction: system_instruction.unwrap_or_else(|| Self::DEFAULT_SYSTEM_INSTRUCTION.to_string()),
-            rag_retriever: None,
-        }
+        let system_instruction = system_instruction
+            .or_else(|| std::env::var("GEMINI_SYSTEM_INSTRUCTION").ok())
+            .unwrap_or_else(|| Self::DEFAULT_SYSTEM_INSTRUCTION.to_string());
+
+        Self { thread_builder, identity_resolver, system_instruction, rag_retriever: None }
     }
 
     pub fn with_rag(mut self, retriever: Arc<crate::SemanticRetriever>) -> Self {

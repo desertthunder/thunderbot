@@ -390,7 +390,6 @@ pub fn landing_page() -> Markup {
     )
 }
 
-#[allow(dead_code)]
 pub fn login_page() -> Markup {
     html! {
         (PreEscaped(r#"<!DOCTYPE html>"#))

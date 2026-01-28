@@ -217,8 +217,6 @@ async fn handle_db(command: &cli::DbCommands) -> anyhow::Result<()> {
 
             let before_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
             let size = repo.backup(path).await?;
-            // TODO: use or remove
-            let _after_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
 
             let size_mb = size as f64 / (1024.0 * 1024.0);
             echo::success("Backup created successfully");
@@ -368,7 +366,7 @@ async fn handle_serve(cli: &Cli) -> anyhow::Result<()> {
     let own_did = bsky_client
         .get_session()
         .await
-        .map(|s| s.did.clone())
+        .map(|s| s.did)
         .unwrap_or_else(|| "did:plc:placeholder".to_string());
 
     let agent = Arc::new(Agent::from_clients(bsky_client.clone(), repo.clone(), own_did, None)?);
