@@ -1,5 +1,6 @@
 use owo_colors::OwoColorize;
 use std::sync::Arc;
+use std::time::Instant;
 use tnbot_core::Settings;
 use tnbot_core::ai::{DEFAULT_CONSTITUTION, Glm5Client, Glm5Config, PromptBuilder};
 use tnbot_core::bsky::BskyClient;
@@ -9,14 +10,16 @@ use tnbot_core::db::repository::LibsqlRepository;
 use tnbot_core::embedding::{EmbeddingPipeline, EmbeddingPipelineConfig};
 use tnbot_core::jetstream::{EventProcessor, FilteredEvent, ProcessedEvent};
 use tnbot_core::services::{ActionPipeline, MemoryRetriever, MemoryRetrieverConfig};
+use tnbot_web::runtime::SharedRuntimeState;
 
 struct ActionEventProcessor {
     pipeline: ActionPipeline<LibsqlRepository>,
+    runtime: SharedRuntimeState,
 }
 
 impl ActionEventProcessor {
-    fn new(pipeline: ActionPipeline<LibsqlRepository>) -> Self {
-        Self { pipeline }
+    fn new(pipeline: ActionPipeline<LibsqlRepository>, runtime: SharedRuntimeState) -> Self {
+        Self { pipeline, runtime }
     }
 }
 
@@ -25,6 +28,20 @@ impl EventProcessor for ActionEventProcessor {
     async fn process(
         &self, mut event: FilteredEvent,
     ) -> Result<ProcessedEvent, Box<dyn std::error::Error + Send + Sync>> {
+        self.runtime.record_jetstream_event(event.cursor());
+        self.runtime.begin_processing();
+
+        if self.runtime.is_paused() {
+            tracing::debug!(
+                cursor = event.cursor(),
+                "Bot paused; acknowledging event without processing"
+            );
+            event.acknowledge();
+            self.runtime.finish_processing(true, None);
+            return Ok(ProcessedEvent { event, success: true, error: None });
+        }
+
+        let started = Instant::now();
         match self.pipeline.process_mention(&event).await {
             Ok(result) => {
                 if result.loop_prevented {
@@ -42,9 +59,14 @@ impl EventProcessor for ActionEventProcessor {
                 }
 
                 event.acknowledge();
+                self.runtime
+                    .finish_processing(true, Some(started.elapsed().as_millis() as u64));
                 Ok(ProcessedEvent { event, success: true, error: None })
             }
-            Err(e) => Ok(ProcessedEvent { event, success: false, error: Some(e.to_string()) }),
+            Err(e) => {
+                self.runtime.finish_processing(false, None);
+                Ok(ProcessedEvent { event, success: false, error: Some(e.to_string()) })
+            }
         }
     }
 }
@@ -148,7 +170,20 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
         action_pipeline = action_pipeline.with_memory_retriever(retriever);
     }
 
-    let processor = ActionEventProcessor::new(action_pipeline);
+    let runtime = tnbot_web::runtime::new_shared_runtime();
+    let processor = ActionEventProcessor::new(action_pipeline, runtime.clone());
 
-    super::jetstream::listen_with_processor(processor, None, settings.bot.did.clone(), None).await
+    let web_settings = settings.clone();
+    let web_handle = tokio::spawn(async move {
+        if let Err(e) = tnbot_web::run(web_settings, runtime, dry_run).await {
+            tracing::error!(error = %e, "Web dashboard stopped");
+        }
+    });
+
+    let daemon_result = super::jetstream::listen_with_processor(processor, None, settings.bot.did.clone(), None).await;
+
+    web_handle.abort();
+    let _ = web_handle.await;
+
+    daemon_result
 }

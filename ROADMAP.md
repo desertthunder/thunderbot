@@ -732,3 +732,4 @@ Part 6: Milestone 13
 
 - Whitelist for who can communicate with bots (mutuals?)
 - Administrator accounts
+- Use `icondata` crate for SVGs in dashboard
