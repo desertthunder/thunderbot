@@ -363,3 +363,7 @@ Part 2: Milestone 7
         - `status` - Show service health and connection status.
         - `serve` - Start the main daemon (Jetstream listener + event processor).
         - `serve --dry-run` - Process events without posting replies.
+
+## Parking Lot
+
+- Whitelist for who can communicate with bots (mutuals?)

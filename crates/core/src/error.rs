@@ -8,6 +8,9 @@ pub enum BotError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 pub type Result<T> = std::result::Result<T, BotError>;

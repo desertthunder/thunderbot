@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod jetstream;
 
