@@ -1,4 +1,4 @@
-use crate::jetstream::types::JetstreamEvent;
+use crate::jetstream::types::{CommitOperation, JetstreamEvent};
 use std::sync::Arc;
 
 /// Filter configuration for Jetstream events
@@ -19,7 +19,7 @@ impl EventFilter {
     pub fn filter(&self, event: JetstreamEvent) -> Option<FilteredEvent> {
         match &event {
             JetstreamEvent::Commit { did, time_us, commit } => {
-                if commit.operation != "create" || commit.collection != "app.bsky.feed.post" {
+                if commit.operation != CommitOperation::Create || commit.collection != "app.bsky.feed.post" {
                     self.log_discarded_event(&event, "not a post create operation");
                     return None;
                 }
@@ -39,12 +39,10 @@ impl EventFilter {
                 Some(FilteredEvent { event, acknowledged: false })
             }
             JetstreamEvent::Identity { .. } => {
-                // TODO: update identity cache
                 self.log_discarded_event(&event, "identity event (not processed)");
                 None
             }
             JetstreamEvent::Account { .. } => {
-                // TODO: process account events
                 self.log_discarded_event(&event, "account event (not processed)");
                 None
             }
@@ -164,7 +162,7 @@ mod tests {
             time_us: 1234567890,
             commit: CommitData {
                 rev: "test".to_string(),
-                operation: "create".to_string(),
+                operation: CommitOperation::Create,
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "test123".to_string(),
                 record: Some(record),
@@ -183,7 +181,7 @@ mod tests {
             time_us: 1234567890,
             commit: CommitData {
                 rev: "test".to_string(),
-                operation: "create".to_string(),
+                operation: CommitOperation::Create,
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "test123".to_string(),
                 record: Some(record),
@@ -281,7 +279,7 @@ mod tests {
             time_us: 1234567890,
             commit: CommitData {
                 rev: "test".to_string(),
-                operation: "delete".to_string(),
+                operation: CommitOperation::Delete,
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "test123".to_string(),
                 record: Some(record),

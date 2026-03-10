@@ -19,6 +19,23 @@ pub fn show_config(settings: &Settings, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn validate_config() {
-    println!("{}", "Configuration is valid!".green().bold());
+pub fn validate_config(settings: &Settings, json: bool) -> anyhow::Result<()> {
+    match tnbot_core::config::validate_settings(settings) {
+        Ok(()) => {
+            if json {
+                println!("{}", serde_json::json!({ "valid": true }));
+            } else {
+                println!("{}", "Configuration is valid!".green().bold());
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if json {
+                println!("{}", serde_json::json!({ "valid": false, "error": err.to_string() }));
+            } else {
+                eprintln!("{} {}", "Configuration is invalid:".red().bold(), err);
+            }
+            Err(anyhow::anyhow!(err))
+        }
+    }
 }

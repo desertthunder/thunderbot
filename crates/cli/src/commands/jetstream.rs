@@ -30,11 +30,21 @@ impl EventProcessor for LoggingProcessor {
     }
 }
 
+fn resolve_target_did(filter_did: Option<String>, configured_bot_did: String) -> anyhow::Result<String> {
+    let did = filter_did.unwrap_or(configured_bot_did);
+    if did.trim().is_empty() {
+        anyhow::bail!("No target DID provided. Set `bot.did` in config/.env or pass `--filter-did did:...`.");
+    }
+    Ok(did)
+}
+
 /// Listen to Jetstream with full filtering and pipeline
-pub async fn listen(filter_did: Option<String>, duration: Option<u64>) {
+pub async fn listen(
+    filter_did: Option<String>, configured_bot_did: String, duration: Option<u64>,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Jetstream listener with filtering pipeline...");
 
-    let bot_did = filter_did.unwrap_or_else(|| "did:plc:placeholder".to_string());
+    let bot_did = resolve_target_did(filter_did, configured_bot_did)?;
     let filter = SharedFilter::new(EventFilter::new(bot_did));
     let pipeline_config = PipelineConfig { num_workers: 4, channel_buffer_size: 1000, max_in_flight: 100 };
 
@@ -71,6 +81,14 @@ pub async fn listen(filter_did: Option<String>, duration: Option<u64>) {
     let start_time = tokio::time::Instant::now();
 
     loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n{}", "Received shutdown signal".yellow());
+                break;
+            }
+        }
+
         if let Some(dur) = duration
             && start_time.elapsed().as_secs() >= dur
         {
@@ -78,12 +96,11 @@ pub async fn listen(filter_did: Option<String>, duration: Option<u64>) {
             break;
         }
 
-        if start_time.elapsed().as_secs().is_multiple_of(5) {
+        let elapsed = start_time.elapsed().as_secs();
+        if elapsed > 0 && elapsed.is_multiple_of(5) {
             let stats = pipeline.stats();
-            print_stats(&stats, start_time.elapsed().as_secs());
+            print_stats(&stats, elapsed);
         }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     println!("\n{}", "Shutting down...".yellow());
@@ -94,12 +111,13 @@ pub async fn listen(filter_did: Option<String>, duration: Option<u64>) {
     let final_stats = pipeline.stats();
     println!("\n{}", "=== Final Statistics ===".green().bold());
     print_stats(&final_stats, start_time.elapsed().as_secs());
+    Ok(())
 }
 
-pub async fn replay(cursor: u64, filter_did: Option<String>) {
+pub async fn replay(cursor: u64, filter_did: Option<String>, configured_bot_did: String) -> anyhow::Result<()> {
     tracing::info!("Replaying Jetstream from cursor {}...", cursor);
 
-    let bot_did = filter_did.unwrap_or_else(|| "did:plc:placeholder".to_string());
+    let bot_did = resolve_target_did(filter_did, configured_bot_did)?;
 
     let (tx, mut rx) = mpsc::channel(100);
 
@@ -152,6 +170,7 @@ pub async fn replay(cursor: u64, filter_did: Option<String>) {
         )
         .green()
     );
+    Ok(())
 }
 
 fn print_stats(stats: &tnbot_core::jetstream::pipeline::PipelineStatsSnapshot, elapsed_secs: u64) {

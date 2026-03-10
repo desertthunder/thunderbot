@@ -8,9 +8,12 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message};
 
 static INIT_CRYPTO: Once = Once::new();
+const CURSOR_REWIND_US: i64 = 5_000_000;
 
 fn ensure_crypto_provider() {
     INIT_CRYPTO.call_once(|| {
@@ -92,7 +95,7 @@ impl JetstreamClient {
 
     async fn get_cursor(&self) -> Option<i64> {
         let cursor = *self.last_cursor.read().await;
-        if cursor > 0 { Some(cursor) } else { self.config.cursor }
+        if cursor > 0 { Some(cursor.saturating_sub(CURSOR_REWIND_US)) } else { self.config.cursor }
     }
 
     async fn update_cursor(&self, time_us: i64) {
@@ -130,7 +133,14 @@ impl JetstreamClient {
         let url = self.build_url().await;
         tracing::info!("Connecting to Jetstream at {}", url);
 
-        let (ws_stream, _) = connect_async(&url).await?;
+        let mut request = url.clone().into_client_request()?;
+        if self.config.compress {
+            request
+                .headers_mut()
+                .insert("Socket-Encoding", HeaderValue::from_static("zstd"));
+        }
+
+        let (ws_stream, _) = connect_async(request).await?;
         tracing::info!("Connected to Jetstream");
 
         self.handle_stream(ws_stream).await
@@ -230,5 +240,21 @@ mod tests {
         assert!(url.contains("jetstream2.us-east.bsky.network/subscribe"));
         assert!(url.contains("wantedCollections=app.bsky.feed.post"));
         assert!(url.contains("compress=true"));
+    }
+
+    #[test]
+    fn test_build_url_rewinds_cursor_after_progress() {
+        let config = JetstreamConfig::default();
+        let (tx, _rx) = mpsc::channel(100);
+        let client = JetstreamClient::new(config, tx);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async { client.update_cursor(10_000_000).await });
+        let url = rt.block_on(async { client.build_url().await });
+
+        assert!(
+            url.contains("cursor=5000000"),
+            "URL should include rewound cursor: {url}"
+        );
     }
 }

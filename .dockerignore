@@ -1,0 +1,5 @@
+target
+.git
+.sandbox
+.vscode
+**/*.log

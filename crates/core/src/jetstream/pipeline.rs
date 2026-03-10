@@ -2,7 +2,7 @@ use crate::jetstream::filter::{FilteredEvent, SharedFilter};
 use crate::jetstream::types::JetstreamEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
 /// Configuration for the event processing pipeline
@@ -76,16 +76,12 @@ pub struct EventPipeline<P: EventProcessor> {
     shutdown_signal: Arc<AtomicBool>,
     event_tx: mpsc::Sender<JetstreamEvent>,
     event_rx: Arc<RwLock<mpsc::Receiver<JetstreamEvent>>>,
-    processed_tx: mpsc::Sender<ProcessedEvent>,
-    processed_rx: Arc<RwLock<mpsc::Receiver<ProcessedEvent>>>,
     worker_handles: Arc<RwLock<Vec<JoinHandle<()>>>>,
-    shutdown_complete: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
 }
 
 impl<P: EventProcessor + 'static> EventPipeline<P> {
     pub fn new(config: PipelineConfig, filter: SharedFilter, processor: P) -> Self {
         let (event_tx, event_rx) = mpsc::channel(config.channel_buffer_size);
-        let (processed_tx, processed_rx) = mpsc::channel(config.channel_buffer_size);
 
         Self {
             config,
@@ -95,10 +91,7 @@ impl<P: EventProcessor + 'static> EventPipeline<P> {
             shutdown_signal: Arc::new(AtomicBool::new(false)),
             event_tx,
             event_rx: Arc::new(RwLock::new(event_rx)),
-            processed_tx,
-            processed_rx: Arc::new(RwLock::new(processed_rx)),
             worker_handles: Arc::new(RwLock::new(Vec::new())),
-            shutdown_complete: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -119,7 +112,6 @@ impl<P: EventProcessor + 'static> EventPipeline<P> {
                 stats: self.stats.clone(),
                 shutdown_signal: self.shutdown_signal.clone(),
                 event_rx: self.event_rx.clone(),
-                processed_tx: self.processed_tx.clone(),
                 max_in_flight: self.config.max_in_flight,
             };
 
@@ -180,7 +172,6 @@ struct PipelineWorker<P: EventProcessor> {
     stats: Arc<PipelineStats>,
     shutdown_signal: Arc<AtomicBool>,
     event_rx: Arc<RwLock<mpsc::Receiver<JetstreamEvent>>>,
-    processed_tx: mpsc::Sender<ProcessedEvent>,
     max_in_flight: usize,
 }
 
@@ -243,15 +234,24 @@ impl<P: EventProcessor + 'static> PipelineWorker<P> {
             };
 
             if processed.success {
-                self.stats.events_processed.fetch_add(1, Ordering::Relaxed);
-                tracing::trace!(worker_id = self.worker_id, "Event processed successfully");
+                if processed.event.is_acknowledged() {
+                    self.stats.events_processed.fetch_add(1, Ordering::Relaxed);
+                    tracing::trace!(worker_id = self.worker_id, "Event processed and acknowledged");
+                } else {
+                    self.stats.events_failed.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        worker_id = self.worker_id,
+                        cursor = processed.event.cursor(),
+                        "Event processing succeeded but was not acknowledged"
+                    );
+                }
             } else {
                 self.stats.events_failed.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(worker_id = self.worker_id, "Event processing reported failure");
-            }
-
-            if let Err(e) = self.processed_tx.send(processed).await {
-                tracing::warn!(worker_id = self.worker_id, error = %e, "Failed to send processed event");
+                tracing::warn!(
+                    worker_id = self.worker_id,
+                    error = ?processed.error,
+                    "Event processing reported failure"
+                );
             }
 
             in_flight -= 1;
@@ -266,7 +266,7 @@ impl<P: EventProcessor + 'static> PipelineWorker<P> {
 mod tests {
     use super::*;
     use crate::jetstream::filter::EventFilter;
-    use crate::jetstream::types::CommitData;
+    use crate::jetstream::types::{CommitData, CommitOperation};
 
     struct TestProcessor;
 
@@ -306,7 +306,7 @@ mod tests {
             time_us: 1234567890,
             commit: CommitData {
                 rev: "test".to_string(),
-                operation: "create".to_string(),
+                operation: CommitOperation::Create,
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "test123".to_string(),
                 record: Some(record),

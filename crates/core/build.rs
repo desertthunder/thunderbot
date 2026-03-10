@@ -2,33 +2,13 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const ZSTD_DICT_URL: &str =
-    "https://raw.githubusercontent.com/bluesky-social/jetstream/main/pkg/models/zstd_dictionary";
-
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/zstd_dictionary");
 
     let out_dir = env::var("OUT_DIR").unwrap();
-    let dict_path = PathBuf::from(&out_dir).join("zstd_dictionary");
-
-    if !dict_path.exists() {
-        println!("cargo:warning=Fetching zstd dictionary from Jetstream repo...");
-
-        match reqwest::blocking::get(ZSTD_DICT_URL) {
-            Ok(response) => match response.status().is_success() {
-                true => match response.bytes() {
-                    Ok(bytes) => {
-                        let size = bytes.len();
-                        fs::write(&dict_path, bytes).expect("Failed to write zstd dictionary");
-                        println!("cargo:warning=Successfully fetched zstd dictionary ({} bytes)", size);
-                    }
-                    Err(e) => panic!("Failed to read zstd dictionary bytes: {}", e),
-                },
-                false => panic!("Failed to fetch zstd dictionary: HTTP {}", response.status()),
-            },
-            Err(e) => panic!("Failed to download zstd dictionary: {}", e),
-        }
-    }
+    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let dict_path = PathBuf::from(crate_dir).join("assets/zstd_dictionary");
 
     let dict_bytes = fs::read(&dict_path).expect("Failed to read dictionary");
     let rust_code = format!(

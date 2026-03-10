@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind")]
@@ -26,14 +27,31 @@ pub enum JetstreamEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommitData {
     pub rev: String,
-    pub operation: String,
+    pub operation: CommitOperation,
     pub collection: String,
     pub rkey: String,
-    // TODO: this should be an enum
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitOperation {
+    Create,
+    Update,
+    Delete,
+}
+
+impl Display for CommitOperation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommitOperation::Create => f.write_str("create"),
+            CommitOperation::Update => f.write_str("update"),
+            CommitOperation::Delete => f.write_str("delete"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,7 +97,7 @@ pub enum FacetFeature {
 
 impl CommitData {
     pub fn is_mention_of(&self, target_did: &str) -> bool {
-        if self.collection != "app.bsky.feed.post" || self.operation != "create" {
+        if self.collection != "app.bsky.feed.post" || self.operation != CommitOperation::Create {
             return false;
         }
 
@@ -129,7 +147,7 @@ mod tests {
 
         let commit = CommitData {
             rev: "test".to_string(),
-            operation: "create".to_string(),
+            operation: CommitOperation::Create,
             collection: "app.bsky.feed.post".to_string(),
             rkey: "test".to_string(),
             record: Some(record),
@@ -144,7 +162,7 @@ mod tests {
     fn test_commit_data_not_post() {
         let commit = CommitData {
             rev: "test".to_string(),
-            operation: "create".to_string(),
+            operation: CommitOperation::Create,
             collection: "app.bsky.feed.like".to_string(),
             rkey: "test".to_string(),
             record: None,
@@ -178,7 +196,7 @@ mod tests {
                 assert_eq!(did, "did:plc:eygmaihciaxprqvxpfvl6flk");
                 assert_eq!(time_us, 1725911162329308);
                 assert_eq!(commit.collection, "app.bsky.feed.post");
-                assert_eq!(commit.operation, "create");
+                assert_eq!(commit.operation, CommitOperation::Create);
             }
             _ => panic!("Expected Commit event"),
         }
