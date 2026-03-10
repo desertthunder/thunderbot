@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_processor_stores_mention() {
-        let (repo, _, _) = setup_test_db().await;
+        let (repo, _db, _temp_dir) = setup_test_db().await;
         let processor = DatabaseEventProcessor::new(repo.clone());
 
         let event = create_mention_event("did:plc:user456", "test123", "@bot hello");
@@ -232,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_processor_idempotent() {
-        let (repo, _, _) = setup_test_db().await;
+        let (repo, _db, _temp_dir) = setup_test_db().await;
         let processor = DatabaseEventProcessor::new(repo.clone());
 
         let event1 = create_mention_event("did:plc:user789", "test456", "@bot hello");
@@ -249,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_processor_preserves_utf8_content() {
-        let (repo, _, _) = setup_test_db().await;
+        let (repo, _db, _temp_dir) = setup_test_db().await;
         let processor = DatabaseEventProcessor::new(repo.clone());
 
         let text = "@bot hello 👋🌍";
@@ -264,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_processor_maps_reply_root_and_parent() {
-        let (repo, _, _) = setup_test_db().await;
+        let (repo, _db, _temp_dir) = setup_test_db().await;
         let processor = DatabaseEventProcessor::new(repo.clone());
 
         let root_uri = "at://did:plc:root/app.bsky.feed.post/root1";

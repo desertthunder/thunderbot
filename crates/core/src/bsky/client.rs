@@ -9,9 +9,15 @@
 use crate::bsky::models::*;
 use crate::bsky::session::Session;
 use crate::error::{BotError, Result, XrpcErrorResponse};
+use rand::RngExt;
 use reqwest::StatusCode;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+const MAX_TRANSIENT_RETRIES: usize = 3;
+const INITIAL_BACKOFF_MS: u64 = 250;
 
 /// Bluesky XRPC Client
 ///
@@ -64,6 +70,12 @@ impl BskyClient {
     /// Get current session info (if authenticated)
     pub async fn get_session(&self) -> Option<Session> {
         self.session.read().await.clone()
+    }
+
+    /// Replace the currently stored session.
+    pub async fn set_session(&self, session: Session) {
+        let mut stored = self.session.write().await;
+        *stored = Some(session);
     }
 
     /// Authenticate with handle and app password
@@ -146,7 +158,7 @@ impl BskyClient {
     /// Ensure we have a valid session, refreshing if necessary
     ///
     /// This should be called before any authenticated request.
-    async fn ensure_valid_session(&self) -> Result<Session> {
+    pub async fn ensure_valid_session(&self) -> Result<Session> {
         let should_refresh = {
             let session = self.session.read().await;
             match session.as_ref() {
@@ -181,6 +193,40 @@ impl BskyClient {
         session.clone().ok_or(BotError::SessionExpired)
     }
 
+    /// Load a serialized session from disk if present.
+    pub async fn load_session_from_file(&self, path: impl AsRef<Path>) -> Result<Option<Session>> {
+        let path = path.as_ref();
+        let contents = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(BotError::Io(e)),
+        };
+
+        let session: Session = serde_json::from_str(&contents)?;
+        self.set_session(session.clone()).await;
+        Ok(Some(session))
+    }
+
+    /// Persist the current session to disk for reuse by subsequent CLI commands.
+    pub async fn save_session_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let session = self.session.read().await.clone().ok_or(BotError::SessionExpired)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let serialized = serde_json::to_string_pretty(&session)?;
+        tokio::fs::write(path, serialized).await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+        }
+
+        Ok(())
+    }
+
     /// Logout and clear the session
     pub async fn logout(&self) {
         let mut session = self.session.write().await;
@@ -200,21 +246,8 @@ impl BskyClient {
 
         let request = CreateRecordRequest { repo: session.did.clone(), collection: collection.to_string(), record };
 
-        let response = self
-            .http
-            .post(&url)
-            .header("Authorization", session.auth_header())
-            .json(&request)
-            .send()
-            .await?;
-
-        let status = response.status();
-
-        if status == StatusCode::UNAUTHORIZED {
-            self.refresh_session().await?;
-            let session = self.ensure_valid_session().await?;
-
-            let retry_response = self
+        for attempt in 0..MAX_TRANSIENT_RETRIES {
+            let response = self
                 .http
                 .post(&url)
                 .header("Authorization", session.auth_header())
@@ -222,21 +255,46 @@ impl BskyClient {
                 .send()
                 .await?;
 
-            let retry_status = retry_response.status();
-            if !retry_status.is_success() {
-                let error_response = retry_response.json::<XrpcErrorResponse>().await.ok();
-                return Err(BotError::from_xrpc_status(retry_status, error_response));
+            let status = response.status();
+
+            if status == StatusCode::UNAUTHORIZED {
+                self.refresh_session().await?;
+                let refreshed = self.ensure_valid_session().await?;
+                let retry_response = self
+                    .http
+                    .post(&url)
+                    .header("Authorization", refreshed.auth_header())
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let retry_status = retry_response.status();
+                if !retry_status.is_success() {
+                    let error_response = retry_response.json::<XrpcErrorResponse>().await.ok();
+                    return Err(BotError::from_xrpc_status(retry_status, error_response));
+                }
+
+                return retry_response.json().await.map_err(|e| e.into());
             }
 
-            return retry_response.json().await.map_err(|e| e.into());
-        }
+            if status.is_success() {
+                return response.json().await.map_err(|e| e.into());
+            }
 
-        if !status.is_success() {
+            if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                && attempt + 1 < MAX_TRANSIENT_RETRIES
+            {
+                sleep_with_jitter_backoff(attempt).await;
+                continue;
+            }
+
             let error_response = response.json::<XrpcErrorResponse>().await.ok();
             return Err(BotError::from_xrpc_status(status, error_response));
         }
 
-        response.json().await.map_err(|e| e.into())
+        Err(BotError::XrpcHttp(
+            "create_record retry loop exhausted unexpectedly".to_string(),
+        ))
     }
 
     /// Get a record by URI
@@ -352,9 +410,18 @@ impl BskyClient {
     }
 }
 
+async fn sleep_with_jitter_backoff(attempt: usize) {
+    let factor = 1_u64 << attempt;
+    let base = INITIAL_BACKOFF_MS.saturating_mul(factor);
+    let jitter_ms = rand::rng().random_range(0..=100_u64);
+    tokio::time::sleep(Duration::from_millis(base.saturating_add(jitter_ms))).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
+    use tempfile::TempDir;
 
     #[test]
     fn test_bsky_client_new() {
@@ -366,5 +433,37 @@ mod tests {
     fn test_bsky_client_with_credentials() {
         let client = BskyClient::with_credentials("https://bsky.social", "test.bsky.social", "app-password-123");
         assert_eq!(client.pds_host, "https://bsky.social");
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_session_from_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let session_path = temp_dir.path().join("session.json");
+
+        let client = BskyClient::new("https://bsky.social");
+        let session = Session {
+            did: "did:plc:test".to_string(),
+            handle: "test.bsky.social".to_string(),
+            access_jwt: "access".to_string(),
+            refresh_jwt: "refresh".to_string(),
+            access_expires_at: Utc::now() + Duration::hours(2),
+        };
+        client.set_session(session.clone()).await;
+        client
+            .save_session_to_file(&session_path)
+            .await
+            .expect("session should be persisted");
+
+        let restored_client = BskyClient::new("https://bsky.social");
+        let restored = restored_client
+            .load_session_from_file(&session_path)
+            .await
+            .expect("session should load")
+            .expect("session should exist");
+
+        assert_eq!(restored.did, session.did);
+        assert_eq!(restored.handle, session.handle);
+        assert_eq!(restored.access_jwt, session.access_jwt);
+        assert_eq!(restored.refresh_jwt, session.refresh_jwt);
     }
 }

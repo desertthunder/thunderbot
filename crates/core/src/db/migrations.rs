@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations() {
-        let (db, _) = create_test_db().await;
+        let (db, _temp_dir) = create_test_db().await;
 
         run_migrations(&db).await.expect("Failed to run migrations");
 
@@ -140,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_migrations() {
-        let (db, _) = create_test_db().await;
+        let (db, _temp_dir) = create_test_db().await;
 
         let result = check_migrations(&db).await.expect("Failed to check migrations");
         assert!(!result);

@@ -14,7 +14,7 @@ struct JwtClaims {
 }
 
 /// Session information including tokens and metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     /// User's DID
     pub did: String,
@@ -140,5 +140,23 @@ mod tests {
 
         assert_eq!(session.auth_header(), "Bearer access123");
         assert_eq!(session.refresh_auth_header(), "Bearer refresh456");
+    }
+
+    #[test]
+    fn test_session_serde_roundtrip() {
+        let session = Session {
+            did: "did:plc:test".to_string(),
+            handle: "test.bsky.social".to_string(),
+            access_jwt: "access123".to_string(),
+            refresh_jwt: "refresh456".to_string(),
+            access_expires_at: Utc::now() + Duration::hours(2),
+        };
+
+        let json = serde_json::to_string(&session).expect("Session should serialize");
+        let roundtrip: Session = serde_json::from_str(&json).expect("Session should deserialize");
+        assert_eq!(roundtrip.did, session.did);
+        assert_eq!(roundtrip.handle, session.handle);
+        assert_eq!(roundtrip.access_jwt, session.access_jwt);
+        assert_eq!(roundtrip.refresh_jwt, session.refresh_jwt);
     }
 }

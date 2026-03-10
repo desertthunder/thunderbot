@@ -95,14 +95,14 @@ pub struct CreateRecordRequest {
 }
 
 /// Create record response
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRecordResponse {
     pub uri: String,
     pub cid: String,
 }
 
 /// Get record response
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetRecordResponse {
     pub uri: String,
     pub cid: String,
@@ -125,6 +125,7 @@ pub struct CreateSessionResponse {
     pub refresh_jwt: String,
     pub handle: String,
     pub did: String,
+    #[serde(rename = "didDoc")]
     pub did_doc: Option<serde_json::Value>,
 }
 
@@ -187,5 +188,26 @@ impl AtUri {
     /// Convert back to string
     pub fn as_string(&self) -> String {
         format!("at://{}/{}/{}", self.repo, self.collection, self.rkey)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AtUri;
+
+    #[test]
+    fn test_parse_at_uri() {
+        let uri = "at://did:plc:abc123/app.bsky.feed.post/3k43tv4rft22g";
+        let parsed = AtUri::parse(uri).expect("Should parse valid AT URI");
+        assert_eq!(parsed.repo, "did:plc:abc123");
+        assert_eq!(parsed.collection, "app.bsky.feed.post");
+        assert_eq!(parsed.rkey, "3k43tv4rft22g");
+        assert_eq!(parsed.as_string(), uri);
+    }
+
+    #[test]
+    fn test_parse_invalid_at_uri() {
+        assert!(AtUri::parse("https://bsky.app").is_none());
+        assert!(AtUri::parse("at://did:plc:abc123/app.bsky.feed.post").is_none());
     }
 }

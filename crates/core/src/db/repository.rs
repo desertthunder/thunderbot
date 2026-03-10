@@ -588,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_thread_by_root_returns_chronological_order() {
-        let (repo, _, _) = setup_test_repo().await;
+        let (repo, _db, _temp_dir) = setup_test_repo().await;
         let root_uri = "at://did:plc:root/app.bsky.feed.post/root";
 
         let rows = vec![
@@ -626,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_recent_threads_includes_last_activity_timestamp() {
-        let (repo, _, _) = setup_test_repo().await;
+        let (repo, _db, _temp_dir) = setup_test_repo().await;
         let root_uri = "at://did:plc:root/app.bsky.feed.post/root";
 
         repo.create_conversation(CreateConversationParams {

@@ -369,3 +369,7 @@ Part 2: Milestone 7
 
 - Whitelist for who can communicate with bots (mutuals?)
 - Administrator accounts
+- Support other models
+    1. [Gemma via Ollama](https://ollama.com/library/gemma3) (`gemma3:latest`)
+    2. [Whisper.cpp](https://github.com/ggml-org/whisper.cpp) to talk to it
+        - Small or Medium
