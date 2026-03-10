@@ -22,9 +22,11 @@
 //! ```
 
 pub mod client;
+pub mod prompt;
 pub mod types;
 
 pub use client::{Glm5Client, Glm5Config};
+pub use prompt::{DEFAULT_CONSTITUTION, PromptBuilder};
 pub use types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice, DeltaMessage,
     FunctionCall, FunctionDef, Message, ResponseFormat, ThinkingConfig, Tool, ToolCall, Usage,
