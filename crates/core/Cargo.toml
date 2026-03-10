@@ -14,6 +14,17 @@ dotenvy = "0.15"
 toml = "0.9"
 thiserror = "2"
 anyhow = "1.0"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+zstd = "0.13"
+futures-util = "0.3"
+url = "2"
+rand = "0.10"
+urlencoding = "2"
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+reqwest = { version = "0.13", features = ["blocking"] }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 pub mod config;
 pub mod error;
+pub mod jetstream;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {

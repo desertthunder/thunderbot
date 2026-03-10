@@ -87,6 +87,8 @@ pub enum JetstreamAction {
     Replay {
         #[arg(long, help = "Cursor timestamp (time_us) to start from")]
         cursor: u64,
+        #[arg(long, help = "Filter to mentions of a specific DID")]
+        filter_did: Option<String>,
     },
 }
 
@@ -201,8 +203,9 @@ mod tests {
         let args = vec!["tnbot", "jetstream", "replay", "--cursor", "12345"];
         let cli = Cli::parse_from(args);
         match cli.command {
-            Commands::Jetstream { action: JetstreamAction::Replay { cursor } } => {
+            Commands::Jetstream { action: JetstreamAction::Replay { cursor, filter_did } } => {
                 assert_eq!(cursor, 12345);
+                assert_eq!(filter_did, None);
             }
             _ => panic!("Expected Jetstream Replay command"),
         }

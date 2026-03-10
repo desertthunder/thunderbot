@@ -5,7 +5,7 @@ use tracing::{error, info};
 mod cli;
 mod commands;
 
-use cli::{Cli, Commands, ConfigAction, parse_log_level};
+use cli::{Cli, Commands, ConfigAction, JetstreamAction, parse_log_level};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,6 +30,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Config { action } => match action {
             ConfigAction::Show => commands::config::show_config(&settings, cli.json)?,
             ConfigAction::Validate => commands::config::validate_config(),
+        },
+        Commands::Jetstream { action } => match action {
+            JetstreamAction::Listen { filter_did, duration } => {
+                commands::jetstream::listen(filter_did, duration).await;
+            }
+            JetstreamAction::Replay { cursor, filter_did } => {
+                commands::jetstream::replay(cursor, filter_did).await;
+            }
         },
         Commands::Status => {
             println!("{}", "Service Status:".green().bold());
