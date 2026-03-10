@@ -52,6 +52,76 @@ On accessJwt expiry → call refreshSession with refreshJwt
 On refreshJwt expiry → call createSession again
 ```
 
+### OAuth 2.0 (AT Protocol Profile)
+
+AT Protocol defines an OAuth 2.0 profile intended to replace `createSession` /
+app passwords. It enables third-party authorization without credential sharing.
+
+#### Mandatory Mechanisms
+
+- **DPoP** (RFC 9449) — tokens are bound to a per-session ES256 keypair. A
+  unique DPoP JWT (`jti` = random) must be signed for every request. Servers
+  provide `DPoP-Nonce` headers that clients must track per server per session.
+- **PKCE** (RFC 7636) — S256 only, `plain` is disallowed.
+- **PAR** (RFC 9126) — all authorization requests must use Pushed Authorization
+  Requests.
+
+#### Client Types
+
+| Type             | Key                                  | Refresh Token Lifetime |
+| ---------------- | ------------------------------------ | ---------------------- |
+| **Confidential** | Server-side signing key (JWKS)       | ≤ 180 days             |
+| **Public**       | No signing key (SPA, mobile, CLI)    | ≤ 2 weeks              |
+
+Access tokens are < 15 min (< 5 min recommended if non-revocable). Refresh
+tokens are **single-use** — each refresh returns a new one.
+
+#### Scopes
+
+The `atproto` scope is required for all sessions. Transitional scopes:
+
+- `transition:generic` — broad PDS access (will be replaced by granular perms)
+- `transition:chat.bsky` — DM access
+
+The Authorization Server returns the account DID in the `sub` field.
+
+#### Authorization Flow (Summary)
+
+```text
+1. Resolve user handle/DID → PDS → Authorization Server metadata
+2. PAR (POST) with: client_id, redirect_uri, scope, state, code_challenge, DPoP
+3. Server returns request_uri
+4. Redirect user to authorization_endpoint?request_uri=...&client_id=...
+5. User authenticates and approves
+6. Callback: redirect_uri?code=...&state=...&iss=...
+7. Exchange code for tokens (POST token_endpoint) with code_verifier + DPoP
+8. Verify sub (DID) by resolving DID doc → PDS → issuer match
+```
+
+#### Client Metadata Document
+
+Hosted at the `client_id` URL:
+
+```json
+{
+  "client_id": "https://example.com/client-metadata.json",
+  "client_name": "My App",
+  "redirect_uris": ["https://example.com/callback"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "scope": "atproto transition:generic",
+  "token_endpoint_auth_method": "private_key_jwt",
+  "dpop_bound_access_tokens": true,
+  "jwks_uri": "https://example.com/jwks.json"
+}
+```
+
+For localhost development, `client_id` can use `http://localhost`.
+
+> [!NOTE]
+> `createSession` with app passwords is simpler and sufficient for first-party bots.
+> OAuth is needed when acting on behalf of other users or when longer session lifetimes are required.
+
 ## Record Operations
 
 ### `com.atproto.repo.createRecord`

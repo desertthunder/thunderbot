@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_build_url_basic() {
         let config = JetstreamConfig::default();
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _) = mpsc::channel(100);
         let client = JetstreamClient::new(config, tx);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_build_url_rewinds_cursor_after_progress() {
         let config = JetstreamConfig::default();
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _) = mpsc::channel(100);
         let client = JetstreamClient::new(config, tx);
         let rt = tokio::runtime::Runtime::new().unwrap();
 

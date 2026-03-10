@@ -163,6 +163,52 @@ mod tests {
         filter.filter(event).unwrap()
     }
 
+    fn create_reply_mention_event(
+        author_did: &str, rkey: &str, text: &str, root_uri: &str, parent_uri: &str,
+    ) -> FilteredEvent {
+        let record = serde_json::json!({
+            "text": text,
+            "reply": {
+                "root": {
+                    "uri": root_uri,
+                    "cid": "bafyroot"
+                },
+                "parent": {
+                    "uri": parent_uri,
+                    "cid": "bafyparent"
+                }
+            },
+            "facets": [
+                {
+                    "index": { "byteStart": 0, "byteEnd": 4 },
+                    "features": [
+                        {
+                            "$type": "app.bsky.richtext.facet#mention",
+                            "did": "did:plc:bot123"
+                        }
+                    ]
+                }
+            ],
+            "createdAt": "2024-01-01T00:00:00.000Z"
+        });
+
+        let event = JetstreamEvent::Commit {
+            did: author_did.to_string(),
+            time_us: 1234567890,
+            commit: CommitData {
+                rev: "test".to_string(),
+                operation: CommitOperation::Create,
+                collection: "app.bsky.feed.post".to_string(),
+                rkey: rkey.to_string(),
+                record: Some(record),
+                cid: Some("bafyrei...".to_string()),
+            },
+        };
+
+        let filter = EventFilter::new("did:plc:bot123");
+        filter.filter(event).unwrap()
+    }
+
     #[tokio::test]
     async fn test_database_processor_stores_mention() {
         let (repo, _, _) = setup_test_db().await;
@@ -199,5 +245,37 @@ mod tests {
 
         let count = repo.count().await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_database_processor_preserves_utf8_content() {
+        let (repo, _, _) = setup_test_db().await;
+        let processor = DatabaseEventProcessor::new(repo.clone());
+
+        let text = "@bot hello 👋🌍";
+        let event = create_mention_event("did:plc:userutf8", "utf8-1", text);
+        let result = processor.process(event).await.unwrap();
+        assert!(result.success);
+
+        let post_uri = "at://did:plc:userutf8/app.bsky.feed.post/utf8-1";
+        let stored = repo.get_by_post_uri(post_uri).await.unwrap().unwrap();
+        assert_eq!(stored.content, text);
+    }
+
+    #[tokio::test]
+    async fn test_database_processor_maps_reply_root_and_parent() {
+        let (repo, _, _) = setup_test_db().await;
+        let processor = DatabaseEventProcessor::new(repo.clone());
+
+        let root_uri = "at://did:plc:root/app.bsky.feed.post/root1";
+        let parent_uri = "at://did:plc:parent/app.bsky.feed.post/parent1";
+        let event = create_reply_mention_event("did:plc:userreply", "reply-1", "@bot in thread", root_uri, parent_uri);
+        let result = processor.process(event).await.unwrap();
+        assert!(result.success);
+
+        let post_uri = "at://did:plc:userreply/app.bsky.feed.post/reply-1";
+        let stored = repo.get_by_post_uri(post_uri).await.unwrap().unwrap();
+        assert_eq!(stored.root_uri, root_uri);
+        assert_eq!(stored.parent_uri.as_deref(), Some(parent_uri));
     }
 }

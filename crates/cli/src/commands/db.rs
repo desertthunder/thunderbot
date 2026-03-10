@@ -61,8 +61,13 @@ pub async fn threads(db_path: &std::path::Path, limit: i64, json_output: bool) -
         if threads.is_empty() {
             println!("  {}", "No threads found".dimmed());
         } else {
-            for (i, (root_uri, _)) in threads.iter().enumerate() {
-                println!("  {}. {}", i + 1, root_uri.cyan());
+            for (i, (root_uri, last_activity_us)) in threads.iter().enumerate() {
+                println!(
+                    "  {}. {} {}",
+                    i + 1,
+                    root_uri.cyan(),
+                    format!("(last activity: {last_activity_us})").dimmed()
+                );
             }
         }
     }

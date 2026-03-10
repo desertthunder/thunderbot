@@ -151,6 +151,7 @@ Part 2: Milestone 7
         - Implement `BskyClient` struct with `reqwest` HTTP client.
         - Implement `createSession` for authentication with identifier/password
             - These are a handle + app password stored in `.env
+        - Setup OAuth2 flow
         - Store `accessJwt` and `refreshJwt` with expiry tracking.
         - Implement `refreshSession` for automatic token renewal.
         - Handle common XRPC errors (rate limits, auth failures, network errors).
@@ -367,3 +368,4 @@ Part 2: Milestone 7
 ## Parking Lot
 
 - Whitelist for who can communicate with bots (mutuals?)
+- Administrator accounts

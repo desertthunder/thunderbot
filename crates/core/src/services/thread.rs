@@ -23,9 +23,11 @@ pub fn extract_root_uri(post_uri: &str, record: &Value) -> String {
             return uri.to_string();
         }
 
-        if let Some(uri) = reply.get("uri").and_then(|u| u.as_str()) {
+        if let Some(parent) = reply.get("parent")
+            && let Some(uri) = parent.get("uri").and_then(|u| u.as_str())
+        {
             tracing::debug!(
-                "Post {} is a reply without root.uri, using reply.uri: {}",
+                "Post {} is a reply without root.uri, using parent.uri as root: {}",
                 post_uri,
                 uri
             );
@@ -38,21 +40,15 @@ pub fn extract_root_uri(post_uri: &str, record: &Value) -> String {
 }
 
 /// Extract the parent URI from a post record
-///
-/// Returns Some(uri) if this is a reply, None otherwise.
 pub fn extract_parent_uri(record: &Value) -> Option<String> {
-    if let Some(reply) = record.get("reply") {
-        if let Some(parent) = reply.get("parent")
-            && let Some(uri) = parent.get("uri").and_then(|u| u.as_str())
-        {
-            return Some(uri.to_string());
-        }
-
-        if let Some(uri) = reply.get("uri").and_then(|u| u.as_str()) {
-            return Some(uri.to_string());
-        }
+    if let Some(reply) = record.get("reply")
+        && let Some(parent) = reply.get("parent")
+        && let Some(uri) = parent.get("uri").and_then(|u| u.as_str())
+    {
+        Some(uri.to_string())
+    } else {
+        None
     }
-    None
 }
 
 /// Extract text content from a post record
@@ -128,7 +124,7 @@ impl<R: ConversationRepository> ThreadReconstructor<R> {
             created_at,
         };
 
-        let _inserted = self.repo.create_conversation(params).await?;
+        let _ = self.repo.create_conversation(params).await?;
 
         let mut missing_parent = None;
         let mut is_orphaned = false;
@@ -243,6 +239,25 @@ mod tests {
         });
 
         assert_eq!(extract_parent_uri(&record), Some(parent_uri.to_string()));
+    }
+
+    #[test]
+    fn test_extract_root_uri_falls_back_to_parent_uri() {
+        let post_uri = "at://did:plc:abc/app.bsky.feed.post/456";
+        let parent_uri = "at://did:plc:def/app.bsky.feed.post/123";
+        let record = json!({
+            "text": "Reply text",
+            "reply": {
+                "parent": {
+                    "uri": parent_uri,
+                    "cid": "bafyrei..."
+                }
+            },
+            "createdAt": "2024-01-01T00:00:00Z"
+        });
+
+        let root_uri = extract_root_uri(post_uri, &record);
+        assert_eq!(root_uri, parent_uri);
     }
 
     #[test]

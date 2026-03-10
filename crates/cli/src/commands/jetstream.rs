@@ -42,13 +42,19 @@ fn resolve_target_did(filter_did: Option<String>, configured_bot_did: String) ->
 pub async fn listen(
     filter_did: Option<String>, configured_bot_did: String, duration: Option<u64>,
 ) -> anyhow::Result<()> {
+    listen_with_processor(LoggingProcessor, filter_did, configured_bot_did, duration).await
+}
+
+pub async fn listen_with_processor<P: EventProcessor + 'static>(
+    processor: P, filter_did: Option<String>, configured_bot_did: String, duration: Option<u64>,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Jetstream listener with filtering pipeline...");
 
     let bot_did = resolve_target_did(filter_did, configured_bot_did)?;
     let filter = SharedFilter::new(EventFilter::new(bot_did));
     let pipeline_config = PipelineConfig { num_workers: 4, channel_buffer_size: 1000, max_in_flight: 100 };
 
-    let pipeline = EventPipeline::new(pipeline_config, filter.clone(), LoggingProcessor);
+    let pipeline = EventPipeline::new(pipeline_config, filter, processor);
     pipeline.start().await;
 
     let (tx, mut rx) = mpsc::channel(1000);

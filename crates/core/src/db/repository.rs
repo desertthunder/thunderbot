@@ -196,10 +196,10 @@ impl ConversationRepository for LibsqlRepository {
         let mut rows = self
             .conn
             .query(
-                "SELECT root_uri, MAX(created_at) as last_activity
+                "SELECT root_uri, CAST(strftime('%s', MAX(created_at)) AS INTEGER) * 1000000 as last_activity_us
                  FROM conversations
                  GROUP BY root_uri
-                 ORDER BY last_activity DESC
+                 ORDER BY MAX(created_at) DESC
                  LIMIT ?1",
                 [limit],
             )
@@ -211,8 +211,10 @@ impl ConversationRepository for LibsqlRepository {
             let root_uri: String = row
                 .get(0)
                 .map_err(|e| BotError::Database(format!("Failed to parse root_uri: {}", e)))?;
-            // TODO: assess need for getting the last_activity timestamp
-            threads.push((root_uri, 0));
+            let last_activity_us: i64 = row
+                .get(1)
+                .map_err(|e| BotError::Database(format!("Failed to parse last_activity_us: {}", e)))?;
+            threads.push((root_uri, last_activity_us));
         }
 
         Ok(threads)
@@ -562,4 +564,87 @@ fn parse_cursor_state_row(row: &libsql::Row) -> Result<CursorState, BotError> {
             .get(2)
             .map_err(|e| BotError::Database(format!("Failed to parse updated: {}", e)))?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::TempDir;
+
+    async fn setup_test_repo() -> (LibsqlRepository, libsql::Database, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let db_path = temp_dir.path().join(format!("repo_test_{ts}.db"));
+        let db = libsql::Builder::new_local(db_path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        migrations::run_migrations(&db).await.unwrap();
+        let conn = db.connect().unwrap();
+        (LibsqlRepository::new(conn), db, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_by_root_returns_chronological_order() {
+        let (repo, _, _) = setup_test_repo().await;
+        let root_uri = "at://did:plc:root/app.bsky.feed.post/root";
+
+        let rows = vec![
+            ("at://did:plc:u1/app.bsky.feed.post/1", "2024-01-01T00:00:02Z"),
+            ("at://did:plc:u1/app.bsky.feed.post/2", "2024-01-01T00:00:01Z"),
+            ("at://did:plc:u1/app.bsky.feed.post/3", "2024-01-01T00:00:03Z"),
+        ];
+
+        for (post_uri, created_at) in rows {
+            repo.create_conversation(CreateConversationParams {
+                root_uri: root_uri.to_string(),
+                post_uri: post_uri.to_string(),
+                parent_uri: None,
+                author_did: "did:plc:u1".to_string(),
+                role: Role::User,
+                content: "hello".to_string(),
+                cid: None,
+                created_at: created_at.to_string(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let thread = repo.get_thread_by_root(root_uri).await.unwrap();
+        let ordered_post_uris: Vec<&str> = thread.iter().map(|r| r.post_uri.as_str()).collect();
+        assert_eq!(
+            ordered_post_uris,
+            vec![
+                "at://did:plc:u1/app.bsky.feed.post/2",
+                "at://did:plc:u1/app.bsky.feed.post/1",
+                "at://did:plc:u1/app.bsky.feed.post/3"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_recent_threads_includes_last_activity_timestamp() {
+        let (repo, _, _) = setup_test_repo().await;
+        let root_uri = "at://did:plc:root/app.bsky.feed.post/root";
+
+        repo.create_conversation(CreateConversationParams {
+            root_uri: root_uri.to_string(),
+            post_uri: "at://did:plc:u1/app.bsky.feed.post/1".to_string(),
+            parent_uri: None,
+            author_did: "did:plc:u1".to_string(),
+            role: Role::User,
+            content: "hello".to_string(),
+            cid: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let threads = repo.get_recent_threads(10).await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].0, root_uri);
+        assert!(threads[0].1 > 0);
+    }
 }

@@ -27,8 +27,6 @@ struct ResolveHandleResponse {
 /// XRPC response for getProfile
 #[derive(Debug, Clone, Deserialize)]
 struct GetProfileResponse {
-    // TODO: Useful for DID verification and debugging, currently unused but kept for completeness
-    #[allow(dead_code)]
     did: String,
     handle: String,
     #[serde(rename = "displayName")]
@@ -222,6 +220,14 @@ impl<R: IdentityRepository> IdentityResolver<R> {
             .json()
             .await
             .map_err(|e| BotError::Validation(format!("Failed to parse response: {}", e)))?;
+
+        if profile.did != did {
+            tracing::warn!(
+                requested_did = %did,
+                profile_did = %profile.did,
+                "Profile response DID does not match requested DID"
+            );
+        }
 
         Ok((profile.handle, profile.display_name))
     }
