@@ -51,6 +51,30 @@ pub fn extract_parent_uri(record: &Value) -> Option<String> {
     }
 }
 
+/// Extract the root CID from a post record reply structure
+pub fn extract_root_cid(record: &Value) -> Option<String> {
+    if let Some(reply) = record.get("reply")
+        && let Some(root) = reply.get("root")
+        && let Some(cid) = root.get("cid").and_then(|c| c.as_str())
+    {
+        Some(cid.to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract the parent CID from a post record reply structure
+pub fn extract_parent_cid(record: &Value) -> Option<String> {
+    if let Some(reply) = record.get("reply")
+        && let Some(parent) = reply.get("parent")
+        && let Some(cid) = parent.get("cid").and_then(|c| c.as_str())
+    {
+        Some(cid.to_string())
+    } else {
+        None
+    }
+}
+
 /// Extract text content from a post record
 pub fn extract_text(record: &Value) -> String {
     record.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string()
@@ -239,6 +263,27 @@ mod tests {
         });
 
         assert_eq!(extract_parent_uri(&record), Some(parent_uri.to_string()));
+    }
+
+    #[test]
+    fn test_extract_root_and_parent_cid() {
+        let record = json!({
+            "text": "Reply text",
+            "reply": {
+                "root": {
+                    "uri": "at://did:plc:def/app.bsky.feed.post/111",
+                    "cid": "bafyroot"
+                },
+                "parent": {
+                    "uri": "at://did:plc:def/app.bsky.feed.post/123",
+                    "cid": "bafyparent"
+                }
+            },
+            "createdAt": "2024-01-01T00:00:00Z"
+        });
+
+        assert_eq!(extract_root_cid(&record), Some("bafyroot".to_string()));
+        assert_eq!(extract_parent_cid(&record), Some("bafyparent".to_string()));
     }
 
     #[test]

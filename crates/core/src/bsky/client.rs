@@ -359,10 +359,15 @@ impl BskyClient {
         };
 
         let parent_ref = StrongRef { uri: parent.uri, cid: parent.cid };
+        self.reply_with_refs(root, parent_ref, text).await
+    }
 
-        let record = PostRecord::reply(text, root, parent_ref);
+    /// Reply to a post with explicit root/parent strong refs.
+    pub async fn reply_with_refs(
+        &self, root: StrongRef, parent: StrongRef, text: impl Into<String>,
+    ) -> Result<CreateRecordResponse> {
+        let record = PostRecord::reply(text, root, parent);
         let record_json = serde_json::to_value(record)?;
-
         self.create_record("app.bsky.feed.post", record_json).await
     }
 

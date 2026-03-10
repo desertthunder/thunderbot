@@ -193,7 +193,7 @@ impl AtUri {
 
 #[cfg(test)]
 mod tests {
-    use super::AtUri;
+    use super::{AtUri, PostRecord, StrongRef};
 
     #[test]
     fn test_parse_at_uri() {
@@ -209,5 +209,20 @@ mod tests {
     fn test_parse_invalid_at_uri() {
         assert!(AtUri::parse("https://bsky.app").is_none());
         assert!(AtUri::parse("at://did:plc:abc123/app.bsky.feed.post").is_none());
+    }
+
+    #[test]
+    fn test_reply_record_includes_root_and_parent_refs() {
+        let root =
+            StrongRef { uri: "at://did:plc:root/app.bsky.feed.post/root1".to_string(), cid: "bafyroot".to_string() };
+        let parent = StrongRef {
+            uri: "at://did:plc:user/app.bsky.feed.post/parent1".to_string(),
+            cid: "bafyparent".to_string(),
+        };
+        let record = PostRecord::reply("hello", root.clone(), parent.clone());
+
+        let reply = record.reply.expect("reply ref must be set");
+        assert_eq!(reply.root, root);
+        assert_eq!(reply.parent, parent);
     }
 }

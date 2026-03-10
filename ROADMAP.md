@@ -234,47 +234,62 @@ Part 2: Milestone 7
 
 **Definition of Done**:
 
-1. Vector store is initialized and capable of storing/querying embeddings.
-2. Conversations are embedded and indexed for semantic similarity search.
-3. Agent can retrieve relevant past context from across different threads.
-4. Hybrid retrieval (keyword + semantic) is functional.
+1. `EmbeddingGemma` runs locally via Ollama and generates embeddings.
+2. `memories` table stores `F32_BLOB(768)` vectors in libSQL native vector columns.
+3. KNN semantic search retrieves relevant past context across threads.
+4. Hybrid retrieval (FTS5 keyword + vector cosine via RRF) is functional.
+5. PromptBuilder injects retrieved memories as context for RAG.
 
 **Tasks**:
 
-1. **Vector Store Setup**
+1. **Vector Store Schema**
     - **Requirements**:
-        - Use SQLite for vector storage
-        - Design vector schema: `memories` (id, embedding, conversation_id, content, metadata, created_at).
-        - Configure embedding dimension based on chosen model (768 for small, 1536 for large).
-        - Implement connection pooling and error handling.
+        - Add `002_vector_memory.sql` migration.
+        - `memories` table: `id`, `conversation_id` (FK), `root_uri`, `content`, `embedding F32_BLOB(768)`, `author_did`, `metadata` (JSON), `created_at`, `expires_at`.
+        - Create `libsql_vector_idx` on `embedding` column for KNN.
+        - `embedding_jobs` table: tracks pending/complete/failed embedding state per conversation.
+        - FTS5 virtual table `memories_fts` for keyword search on `content`.
 
-2. **Embedding Generation**
+2. **Ollama Embedding Client**
     - **Requirements**:
-        - Implement embedding generation.
-        - Create batch embedding pipeline for historical data backfill.
-        - Implement caching layer to avoid re-embedding unchanged content.
-        - Handle embedding failures gracefully with retry logic.
+        - Define `EmbeddingProvider` trait (`embed`, `embed_batch`, `dimensions`).
+        - Implement `OllamaEmbeddingProvider` calling `POST http://localhost:11434/api/embed`.
+        - Default model: `embeddinggemma` (768 dims, 308M params, <200MB RAM quantized).
+        - Fallback model: `nomic-embed-text` (768 dims, 8K context for long summaries).
+        - Batch support (configurable `batch_size`, default 32).
+        - Retry on Ollama connection failure with backoff.
 
-3. **Semantic Retrieval**
+3. **Embedding Pipeline**
     - **Requirements**:
-        - Implement similarity search function with configurable top-k results.
-        - Add metadata filtering (by user, time range, topic).
-        - Implement hybrid search combining BM25 (keyword) with vector similarity.
-        - Expose retrieval function to the prompt builder for RAG context.
+        - On new conversation insert → create `embedding_jobs` row (status: pending).
+        - Background async worker picks up pending jobs, calls `EmbeddingProvider`, stores result.
+        - Skip re-embedding if content hash matches existing memory (deduplication at distance < 0.05).
+        - Retry up to 3× on failure, then mark as `failed`.
+        - `vector backfill` CLI command for historical data.
 
-4. **Memory Management**
+4. **Semantic Retrieval**
     - **Requirements**:
-        - Implement memory consolidation to compress old conversations into summaries.
-        - Add TTL-based memory expiration for privacy compliance.
-        - Create admin API for memory inspection and deletion.
-        - Implement memory deduplication to avoid redundant embeddings.
+        - KNN search via `vector_top_k()` + `vector_distance_cos()`.
+        - Metadata filtering: by `author_did`, time range, `root_uri`.
+        - Hybrid search: run FTS5 BM25 + vector cosine in parallel, merge with Reciprocal Rank Fusion (RRF, k=60).
+        - Configurable `top_k` (default 5).
+        - Expose `MemoryRetriever` service to PromptBuilder for RAG injection.
 
-5. **CLI: Vector Commands**
+5. **Memory Management**
     - **Requirements**:
-        - `vector stats` - Show vector store statistics.
-        - `vector search <QUERY>` - Perform similarity search and display results.
-        - `vector embed <TEXT>` - Generate and display embedding for text.
-        - `vector backfill` - Backfill embeddings for existing conversations.
+        - Consolidation: after 24h thread inactivity, summarize thread via GLM-5, embed summary, delete individual post embeddings.
+        - TTL expiration: 90 days for post memories, 365 days for consolidated summaries.
+        - Deduplication: skip insert if cosine distance to existing same-root memory < 0.05.
+        - `vector consolidate` and `vector expire` CLI commands.
+
+6. **CLI: Vector Commands**
+    - **Requirements**:
+        - `vector stats` — memory count, index size, embedding job status.
+        - `vector search <QUERY>` — semantic search with `--top-k`, `--author` filters.
+        - `vector embed <TEXT>` — generate and display raw embedding vector.
+        - `vector backfill` — embed all un-embedded conversations.
+        - `vector consolidate` — compress stale threads into summary memories.
+        - `vector expire` — delete memories past TTL.
 
 ## Milestone 6: The Control Deck (Web UI)
 

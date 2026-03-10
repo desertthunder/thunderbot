@@ -13,13 +13,15 @@
 use crate::ai::client::Glm5Client;
 use crate::ai::prompt::PromptBuilder;
 use crate::ai::types::ChatCompletionRequest;
-use crate::bsky::client::BskyClient;
+use crate::bsky::{BskyClient, CreateRecordResponse, StrongRef};
 use crate::db::models::{CreateConversationParams, Role};
 use crate::db::repository::{ConversationRepository, IdentityRepository};
 use crate::error::{BotError, Result};
 use crate::jetstream::filter::FilteredEvent;
 use crate::jetstream::types::JetstreamEvent;
-use crate::services::thread::{extract_created_at, extract_parent_uri, extract_root_uri, extract_text};
+use crate::services::thread::{
+    extract_created_at, extract_parent_uri, extract_root_cid, extract_root_uri, extract_text,
+};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -81,6 +83,7 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
 
         let root_uri = extract_root_uri(&post_uri, record);
         let parent_uri = extract_parent_uri(record);
+        let root_cid = extract_root_cid(record).or_else(|| if root_uri == post_uri { cid.clone() } else { None });
         let content = extract_text(record);
         let created_at = extract_created_at(record).unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
@@ -126,9 +129,7 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
         let resolve_handle = |did: &str| identity_map.get(did).map(|s| s.as_str()).unwrap_or(did).to_string();
 
         let messages = self.prompt_builder.build(&thread, resolve_handle);
-        let request = ChatCompletionRequest::new(self.ai_client.model(), messages)
-            .with_max_tokens(300)
-            .with_thinking();
+        let request = ChatCompletionRequest::new(self.ai_client.model(), messages).with_thinking();
 
         let ai_response = self.ai_client.chat_completion(request).await?;
 
@@ -153,7 +154,7 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             });
         }
 
-        let reply_uri = if self.dry_run {
+        let reply_record = if self.dry_run {
             tracing::info!(
                 post_uri = %post_uri,
                 response = %response_text,
@@ -162,16 +163,22 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             None
         } else {
             match self
-                .post_reply_with_retry(&post_uri, &root_uri, cid.as_deref(), &response_text)
+                .post_reply_with_retry(
+                    &post_uri,
+                    &root_uri,
+                    root_cid.as_deref(),
+                    cid.as_deref(),
+                    &response_text,
+                )
                 .await
             {
-                Ok(uri) => {
+                Ok(record) => {
                     tracing::info!(
                         post_uri = %post_uri,
-                        reply_uri = %uri,
+                        reply_uri = %record.uri,
                         "Posted reply"
                     );
-                    Some(uri)
+                    Some(record)
                 }
                 Err(e) => {
                     tracing::error!(
@@ -184,21 +191,21 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             }
         };
 
-        if let Some(ref uri) = reply_uri {
+        if let Some(ref reply) = reply_record {
             let bot_reply_params = CreateConversationParams {
                 root_uri: root_uri.clone(),
-                post_uri: uri.clone(),
+                post_uri: reply.uri.clone(),
                 parent_uri: Some(post_uri.clone()),
                 author_did: self.bot_did.clone(),
                 role: Role::Model,
                 content: response_text.clone(),
-                cid: None,
+                cid: Some(reply.cid.clone()),
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
 
             self.repo.create_conversation(bot_reply_params).await?;
             tracing::debug!(
-                reply_uri = %uri,
+                reply_uri = %reply.uri,
                 "Stored bot reply in database"
             );
         }
@@ -207,7 +214,7 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             post_uri,
             root_uri,
             response_text: Some(response_text),
-            posted_reply_uri: reply_uri,
+            posted_reply_uri: reply_record.map(|r| r.uri),
             silent: false,
             loop_prevented: false,
             error: None,
@@ -216,16 +223,24 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
 
     /// Post a reply with exponential backoff on rate limits
     async fn post_reply_with_retry(
-        &self, parent_uri: &str, _root_uri: &str, _parent_cid: Option<&str>, text: &str,
-    ) -> Result<String> {
+        &self, parent_uri: &str, root_uri: &str, root_cid: Option<&str>, parent_cid: Option<&str>, text: &str,
+    ) -> Result<CreateRecordResponse> {
         let max_retries = 3;
         let initial_backoff_ms = 1000;
         let max_backoff_ms = 60000;
 
         for attempt in 0..max_retries {
-            match self.bsky_client.reply_to(parent_uri, text).await {
+            let result = if let (Some(root_cid), Some(parent_cid)) = (root_cid, parent_cid) {
+                let root_ref = StrongRef { uri: root_uri.to_string(), cid: root_cid.to_string() };
+                let parent_ref = StrongRef { uri: parent_uri.to_string(), cid: parent_cid.to_string() };
+                self.bsky_client.reply_with_refs(root_ref, parent_ref, text).await
+            } else {
+                self.bsky_client.reply_to(parent_uri, text).await
+            };
+
+            match result {
                 Ok(response) => {
-                    return Ok(response.uri);
+                    return Ok(response);
                 }
                 Err(BotError::XrpcRateLimit(_)) if attempt + 1 < max_retries => {
                     let backoff = calculate_backoff(attempt, initial_backoff_ms, max_backoff_ms);

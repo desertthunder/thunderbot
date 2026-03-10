@@ -13,4 +13,6 @@ pub mod thread;
 pub use action::{ActionPipeline, ActionResult};
 pub use identity::{IDENTITY_TTL_HOURS, IdentityResolver, SharedIdentityResolver, create_shared_resolver};
 pub use thread::{ConversationRole, ThreadContext, ThreadReconstructor};
-pub use thread::{extract_created_at, extract_parent_uri, extract_root_uri, extract_text};
+pub use thread::{
+    extract_created_at, extract_parent_cid, extract_parent_uri, extract_root_cid, extract_root_uri, extract_text,
+};

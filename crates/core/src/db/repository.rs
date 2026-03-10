@@ -81,6 +81,7 @@ pub trait CursorRepository: Send + Sync {
 }
 
 /// Implementation of all repository traits using libSQL
+#[derive(Clone)]
 pub struct LibsqlRepository {
     conn: Connection,
 }
