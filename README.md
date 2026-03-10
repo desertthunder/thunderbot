@@ -1,14 +1,16 @@
+<!-- markdownlint-disable MD033 -->
 # Thunderbot
 
-Stateful AI agent that lives on Bluesky.
+Stateful AI agent that lives on Bluesky. Ingests the AT Protocol firehose, reconstructs conversation threads, retrieves relevant memories via hybrid semantic/keyword search, and generates context-aware replies using GLM-5.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.86+
 - A Bluesky account with an App Password
 - (Optional) GLM-5 API key for AI responses
+- (Optional) [Ollama](https://ollama.com) for embedding-based memory
 
 ### Installation
 
@@ -28,8 +30,9 @@ Configuration is loaded from (in order of precedence):
 
 1. `--config /path/to/config.toml` flag
 2. `tnbot.toml` in the working directory
-3. Environment variables (prefixed with `TNBOT_`)
-4. `.env` file in the working directory
+3. Embedded defaults
+4. Environment variables (prefixed with `TNBOT_`, double underscore for nesting: `TNBOT_AI__MODEL`)
+5. `.env` file in the working directory
 
 ### Minimal Configuration
 
@@ -43,14 +46,12 @@ BSKY_APP_PASSWORD=your-app-password-here
 # Required: Your bot's DID (find it at https://plc.directory/yourhandle.bsky.social)
 TNBOT_BOT_DID=did:plc:xxxxx
 
-# Optional: Database location (default: ./data/thunderbot.db)
-TNBOT_DATABASE_PATH=./data/thunderbot.db
-
 # Optional: GLM-5 API key for AI responses
 GLM_5_API_KEY=your-glm5-api-key
 ```
 
-Or use a `tnbot.toml` file:
+<details>
+<summary><code>tnbot.toml</code> full example</summary>
 
 ```toml
 [bot]
@@ -68,18 +69,53 @@ path = "./data/thunderbot.db"
 [logging]
 level = "info"
 format = "pretty"  # or "json"
+
+[ai]
+model = "glm-5"
+temperature = 0.7
+max_tokens = 300
+
+[embedding]
+provider = "ollama"
+model = "nomic-embed-text"
+dimensions = 768
+batch_size = 10
+
+[memory]
+enabled = true
+ttl_days = 90
+consolidation_delay_hours = 24
+dedup_threshold = 0.95
 ```
+
+</details>
 
 ### Getting Your DID
 
 ```bash
-# Resolve your handle to a DID
 cargo run -p tnbot-cli -- bsky resolve yourhandle.bsky.social
 ```
 
 ## Usage
 
-### Bluesky Commands
+### Running the Bot
+
+```bash
+# Start the bot daemon (includes web dashboard on :3000)
+tnbot serve
+
+# Dry-run mode (processes events but doesn't post replies)
+tnbot serve --dry-run
+
+# With verbose logging
+tnbot -vv serve
+
+# Output logs as JSON
+tnbot --json serve
+```
+
+<details>
+<summary>Bluesky Commands</summary>
 
 ```bash
 # Authenticate and test your credentials
@@ -104,7 +140,10 @@ tnbot bsky get-post "at://did:plc:xxx/app.bsky.feed.post/xxx"
 tnbot --json bsky whoami
 ```
 
-### Database Commands
+</details>
+
+<details>
+<summary>Database Commands</summary>
 
 ```bash
 # Initialize the database (run migrations)
@@ -123,7 +162,10 @@ tnbot db thread "at://did:plc:xxx/app.bsky.feed.post/rootxxx"
 tnbot db identities
 ```
 
-### Jetstream Commands
+</details>
+
+<details>
+<summary>Jetstream Commands</summary>
 
 ```bash
 # Listen to the firehose (ctrl+c to stop)
@@ -139,21 +181,78 @@ tnbot jetstream listen --duration 60
 tnbot jetstream replay --cursor 1234567890
 ```
 
-### Running the Bot
+</details>
+
+<details>
+<summary>AI Commands</summary>
 
 ```bash
-# Start the bot daemon
-tnbot serve
+# Send a one-off prompt
+tnbot ai prompt "What is the AT Protocol?"
 
-# Dry-run mode (processes events but doesn't post replies)
-tnbot serve --dry-run
+# Interactive chat session
+tnbot ai chat
 
-# With verbose logging
-tnbot -vv serve
+# Build context from a thread
+tnbot ai context "at://did:plc:xxx/app.bsky.feed.post/xxx"
 
-# Output logs as JSON
-tnbot --json serve
+# Simulate a mention and response pipeline
+tnbot ai simulate "at://did:plc:xxx/app.bsky.feed.post/xxx"
 ```
+
+</details>
+
+<details>
+<summary>Vector / Memory Commands</summary>
+
+```bash
+# Show embedding statistics
+tnbot vector stats
+
+# Semantic search over memories
+tnbot vector search "topic to search for"
+
+# Embed a specific conversation
+tnbot vector embed "at://did:plc:xxx/app.bsky.feed.post/xxx"
+
+# Backfill embeddings for all unprocessed conversations
+tnbot vector backfill
+
+# Consolidate similar memories
+tnbot vector consolidate
+
+# Expire old memories
+tnbot vector expire
+```
+
+</details>
+
+<details>
+<summary>Config & Status Commands</summary>
+
+```bash
+# Show resolved configuration
+tnbot config show
+
+# Validate configuration
+tnbot config validate
+
+# Show service status
+tnbot status
+```
+
+</details>
+
+## Web Dashboard
+
+The `serve` command starts a web dashboard on `127.0.0.1:3000` (configurable via `TNBOT_WEB__BIND`).
+
+- **Dashboard** -- uptime, queue depth, token usage, conversation counts, event metrics, pause/resume controls
+- **Chat Inspector** -- browse threads, view message history with roles and latency
+- **Logs** -- search and inspect failed events
+- **Config** -- view resolved configuration
+
+Authentication is session-based. If no password is configured, an ephemeral one is printed to the console on startup.
 
 ## Development
 
@@ -186,39 +285,41 @@ docker run -e BSKY_HANDLE=yourhandle.bsky.social \
 
 ```sh
 crates/
-├── cli/          # Command-line interface
-├── core/         # Core library (XRPC client, database, processing)
-└── web/          # Web dashboard (future)
+├── cli/          # CLI
+├── core/         # XRPC, SQLite, Jetstream, AI
+└── web/          # Dashboard
 ```
 
 ## Architecture
 
-Thunderbot is a stateful AI agent built on:
-
-- **Runtime**: Rust with Tokio async runtime
-- **State Store**: SQLite (libSQL) for conversation persistence
-- **Ingestion**: Bluesky Jetstream firehose via WebSocket
-- **Protocol**: AT Protocol XRPC for posting and identity
-- **AI**: GLM-5 via REST API
-- **Frontend**: HTMX + Pico CSS dashboard
-
-It uses an event-driven architecture built in Rust that ingests the AT Protocol firehose via Jetstream, filters for mentions, reconstructs thread history from a local database, and uses GLM-5 to generate context-aware responses.
+- **Runtime**: Rust + Tokio
+- **State Store**: libSQL (SQLite) with FTS5 and vector extensions
+- **Ingestion**: Jetstream firehose over WebSocket (zstd-compressed)
+- **Protocol**: AT Protocol XRPC for posting and identity resolution
+- **AI**: GLM-5 via Z.ai REST API
+- **Embeddings**: Ollama (pluggable provider) for vector memory
+- **Memory**: Hybrid retrieval - semantic (vector similarity) + keyword (FTS5) fused with Reciprocal Rank Fusion
+- **Frontend**: Axum SSR with Maud templates, HTMX, and Pico CSS
 
 ```mermaid
 graph TD
-    subgraph External["External Networks"]
+    subgraph External["External Services"]
         BSKY[Bluesky Network]
-        JS[Jetstream Service]
-        LLM[Z.ai API for GLM-5]
+        JS[Jetstream]
+        LLM[Z.ai - GLM-5]
+        OL[Ollama]
     end
 
     subgraph Thunderbot["Thunderbot (Rust)"]
         Listener[Jetstream Client]
         Processor[Event Processor]
-        Agent[Agent Orchestrator]
+        Agent[Action Pipeline]
+        Embed[Embedding Pipeline]
+        Web[Web Dashboard]
 
         subgraph Memory["Persistence Layer"]
-            SQL[(SQLite + sqlite-vec)]
+            SQL[(libSQL - threads, identities)]
+            VEC[(Vector Store - memories)]
         end
     end
 
@@ -227,8 +328,14 @@ graph TD
     Listener -->|Filtered Events| Processor
 
     Processor <-->|Thread Context| SQL
-    Processor -->|Context + Prompt| Agent
+    Processor -->|Context + Memories| Agent
 
     Agent <-->|Reasoning| LLM
     Agent -->|XRPC Reply| BSKY
+
+    Embed <-->|Vectors| OL
+    Embed -->|Store| VEC
+    Processor -->|Jobs| Embed
+
+    Web <-->|Stats & Control| SQL
 ```

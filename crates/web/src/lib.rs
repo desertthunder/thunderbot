@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 use tnbot_core::Settings;
 use tnbot_core::bsky::BskyClient;
 use tnbot_core::db::connection::DatabaseManager;
-use tnbot_core::db::models::{Conversation, CreateConversationParams, Identity, Role};
-use tnbot_core::db::repository::{ConversationRepository, IdentityRepository, LibsqlRepository, MemoryRepository};
+use tnbot_core::db::models::{Conversation, CreateConversationParams, FailedEvent, Identity, Role};
+use tnbot_core::db::repository::{
+    ConversationRepository, FailedEventRepository, IdentityRepository, LibsqlRepository, MemoryRepository,
+};
 use tokio::sync::RwLock;
 
 pub mod runtime;
@@ -34,8 +36,16 @@ struct AppState {
     db_path: PathBuf,
     runtime: SharedRuntimeState,
     auth: Arc<SessionStore>,
+    web: WebRuntimeInfo,
     bsky_client: Option<BskyClient>,
     dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct WebRuntimeInfo {
+    bind_addr: SocketAddr,
+    username: String,
+    generated_password: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -104,7 +114,9 @@ impl SessionStore {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavItem {
     Dashboard,
+    Logs,
     Chat,
+    Config,
 }
 
 #[derive(Debug)]
@@ -141,6 +153,29 @@ struct ThreadMessageView {
     latency: Option<String>,
 }
 
+#[derive(Debug)]
+struct ConfigSnapshot {
+    bot_name: String,
+    bot_did: String,
+    bluesky_handle: String,
+    bluesky_pds_host: String,
+    bluesky_password_status: String,
+    ai_base_url: String,
+    ai_model: String,
+    ai_api_key_status: String,
+    db_path: String,
+    logging_level: String,
+    logging_format: String,
+    memory_enabled: bool,
+    memory_ttl_days: u32,
+    memory_consolidation_ttl_days: u32,
+    memory_dedup_threshold: f64,
+    web_bind_addr: String,
+    web_username: String,
+    web_password_mode: String,
+    dry_run: bool,
+}
+
 pub async fn run(settings: Settings, runtime: SharedRuntimeState, dry_run: bool) -> anyhow::Result<()> {
     let config = WebConfig::from_env();
 
@@ -170,6 +205,11 @@ pub async fn run(settings: Settings, runtime: SharedRuntimeState, dry_run: bool)
         settings,
         runtime,
         auth: Arc::new(SessionStore::new(config.username.clone(), config.password.clone())),
+        web: WebRuntimeInfo {
+            bind_addr: config.bind_addr,
+            username: config.username.clone(),
+            generated_password: config.generated_password,
+        },
         bsky_client,
         dry_run,
     };
@@ -194,7 +234,9 @@ fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/dashboard", get(dashboard_page))
         .route("/dashboard/live", get(dashboard_live))
+        .route("/logs", get(logs_page))
         .route("/chat", get(chat_page))
+        .route("/config", get(config_page))
         .route("/admin/pause", post(set_pause))
         .route("/admin/broadcast", post(broadcast_post))
         .route("/admin/reply", post(reply_in_thread))
@@ -322,23 +364,7 @@ struct DashboardQuery {
 }
 
 async fn dashboard_page(State(state): State<AppState>, Query(query): Query<DashboardQuery>) -> impl IntoResponse {
-    let snapshot = load_dashboard_snapshot(&state).await.unwrap_or_else(|e| {
-        tracing::error!(error = %e, "Failed to build dashboard snapshot");
-        DashboardSnapshot {
-            paused: state.runtime.is_paused(),
-            uptime: format_uptime(state.runtime.started_at()),
-            last_event_label: "unavailable".to_string(),
-            last_event_absolute: "unavailable".to_string(),
-            queue_depth: state.runtime.events_in_flight(),
-            pending_embeddings: 0,
-            monthly_tokens: 0,
-            conversation_count: 0,
-            identity_count: 0,
-            processed_events: state.runtime.events_processed(),
-            failed_events: state.runtime.events_failed(),
-            last_model_latency_ms: state.runtime.last_model_latency_ms(),
-        }
-    });
+    let snapshot = dashboard_snapshot_or_default(&state).await;
 
     let conversations = load_recent_conversations(&state.db_path, 25).await.unwrap_or_default();
     let identities = load_identities(&state.db_path, 25).await.unwrap_or_default();
@@ -373,6 +399,55 @@ async fn dashboard_live(State(state): State<AppState>) -> impl IntoResponse {
             Html("<div class=\"alert error\">Live status unavailable</div>".to_string()).into_response()
         }
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LogsQuery {
+    q: Option<String>,
+}
+
+async fn logs_page(State(state): State<AppState>, Query(query): Query<LogsQuery>) -> Response {
+    let snapshot = dashboard_snapshot_or_default(&state).await;
+
+    let mut failed_events = load_recent_failed_events(&state.db_path, 100).await.unwrap_or_default();
+
+    if let Some(filter) = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+    {
+        failed_events.retain(|event| {
+            event.post_uri.to_lowercase().contains(&filter)
+                || event.error.to_lowercase().contains(&filter)
+                || event.event_json.to_lowercase().contains(&filter)
+        });
+    }
+
+    let body = views::logs_content(&snapshot, query.q.as_deref(), &failed_events);
+
+    Html(views::shell(&state, NavItem::Logs, "Logs", snapshot.paused, &snapshot.uptime, body).into_string())
+        .into_response()
+}
+
+async fn config_page(State(state): State<AppState>) -> Response {
+    let snapshot = dashboard_snapshot_or_default(&state).await;
+    let config = build_config_snapshot(&state);
+    let body = views::config_content(&config);
+
+    Html(
+        views::shell(
+            &state,
+            NavItem::Config,
+            "Config",
+            snapshot.paused,
+            &snapshot.uptime,
+            body,
+        )
+        .into_string(),
+    )
+    .into_response()
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -643,6 +718,55 @@ fn chat_thread_href(root_uri: &str, search: Option<&str>) -> String {
     href
 }
 
+async fn dashboard_snapshot_or_default(state: &AppState) -> DashboardSnapshot {
+    load_dashboard_snapshot(state).await.unwrap_or_else(|e| {
+        tracing::error!(error = %e, "Failed to build dashboard snapshot");
+        DashboardSnapshot {
+            paused: state.runtime.is_paused(),
+            uptime: format_uptime(state.runtime.started_at()),
+            last_event_label: "unavailable".to_string(),
+            last_event_absolute: "unavailable".to_string(),
+            queue_depth: state.runtime.events_in_flight(),
+            pending_embeddings: 0,
+            monthly_tokens: 0,
+            conversation_count: 0,
+            identity_count: 0,
+            processed_events: state.runtime.events_processed(),
+            failed_events: state.runtime.events_failed(),
+            last_model_latency_ms: state.runtime.last_model_latency_ms(),
+        }
+    })
+}
+
+fn build_config_snapshot(state: &AppState) -> ConfigSnapshot {
+    let settings = &state.settings;
+    ConfigSnapshot {
+        bot_name: settings.bot.name.clone(),
+        bot_did: non_empty_or_missing(&settings.bot.did),
+        bluesky_handle: non_empty_or_missing(&settings.bluesky.handle),
+        bluesky_pds_host: settings.bluesky.pds_host.clone(),
+        bluesky_password_status: secret_status(&settings.bluesky.app_password),
+        ai_base_url: settings.ai.base_url.clone(),
+        ai_model: settings.ai.model.clone(),
+        ai_api_key_status: secret_status(&settings.ai.api_key),
+        db_path: settings.database.path.display().to_string(),
+        logging_level: settings.logging.level.clone(),
+        logging_format: format!("{:?}", settings.logging.format).to_lowercase(),
+        memory_enabled: settings.memory.enabled,
+        memory_ttl_days: settings.memory.ttl_days,
+        memory_consolidation_ttl_days: settings.memory.consolidation_ttl_days,
+        memory_dedup_threshold: settings.memory.dedup_threshold,
+        web_bind_addr: state.web.bind_addr.to_string(),
+        web_username: state.web.username.clone(),
+        web_password_mode: if state.web.generated_password {
+            "ephemeral (generated at startup)".to_string()
+        } else {
+            "configured via TNBOT_WEB__PASSWORD".to_string()
+        },
+        dry_run: state.dry_run,
+    }
+}
+
 async fn load_dashboard_snapshot(state: &AppState) -> anyhow::Result<DashboardSnapshot> {
     let manager = DatabaseManager::open(&state.db_path).await?;
     let stats = manager.stats().await?;
@@ -691,7 +815,13 @@ async fn open_repo(db_path: &Path) -> anyhow::Result<LibsqlRepository> {
 
 async fn load_recent_conversations(db_path: &Path, limit: i64) -> anyhow::Result<Vec<Conversation>> {
     let repo = open_repo(db_path).await?;
-    let rows = repo.get_recent(limit, 0).await?;
+    let rows = ConversationRepository::get_recent(&repo, limit, 0).await?;
+    Ok(rows)
+}
+
+async fn load_recent_failed_events(db_path: &Path, limit: i64) -> anyhow::Result<Vec<FailedEvent>> {
+    let repo = open_repo(db_path).await?;
+    let rows = FailedEventRepository::get_recent(&repo, limit).await?;
     Ok(rows)
 }
 
@@ -903,4 +1033,18 @@ fn shorten(value: &str, max: usize) -> String {
     }
 
     value.chars().take(max.saturating_sub(3)).chain("...".chars()).collect()
+}
+
+fn non_empty_or_missing(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() { "(not set)".to_string() } else { trimmed.to_string() }
+}
+
+fn secret_status(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "missing".to_string()
+    } else {
+        format!("set ({} chars)", trimmed.chars().count())
+    }
 }
