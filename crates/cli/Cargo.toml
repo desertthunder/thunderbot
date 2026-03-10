@@ -3,4 +3,17 @@ name = "tnbot-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "tnbot"
+path = "src/main.rs"
+
 [dependencies]
+tnbot-core = { path = "../core" }
+tokio = { version = "1.43", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+owo-colors = { version = "4.2", features = ["supports-colors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"

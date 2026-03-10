@@ -1,0 +1,16 @@
+[bot]
+name = "ThunderBot"
+did = ""
+
+[bluesky]
+handle = ""
+app_password = ""
+pds_host = "https://bsky.social"
+
+[database]
+# TODO: this should be stored in $XDG_CONFIG_HOME/thunderbot/
+path = "./data/thunderbot.db"
+
+[logging]
+level = "info"
+format = "pretty"

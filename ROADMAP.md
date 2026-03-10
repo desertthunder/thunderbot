@@ -13,6 +13,12 @@ This document outlines the engineering specification for a **Stateful AI Agent**
 - **Frontend**: Server-side rendered HTML (HTMX) with Pico CSS, served directly from the application.
 - **CLI**: `clap`-based command-line interface for ad-hoc testing and system interaction.
 
+## Overview
+
+Part 1: Milestones 1-6
+
+Part 2: Milestone 7
+
 ## Milestone 1: The Foundation, Ingestion Layer, and CLI
 
 **Goal**: Establish the Rust application environment, CLI framework, and successfully consume the Bluesky Jetstream firehose.
@@ -34,7 +40,8 @@ This document outlines the engineering specification for a **Stateful AI Agent**
         - Add `clap` crate with `derive` feature for CLI argument parsing.
         - Add `owo-colors` crate for colored console output.
         - Add `config` crate for layered configuration (defaults, file, env vars).
-        - Support `.env` files for local development via `dotenvy`.
+        - Support `.env` & `.toml` config files for local development via `dotenvy` & `toml` with serde
+          feature.
 
 2. **CLI Framework Setup**
     - **Requirements**:
