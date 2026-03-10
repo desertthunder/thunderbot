@@ -38,6 +38,30 @@ pub enum BotError {
 
     #[error("XRPC configuration error: {0}")]
     XrpcConfig(String),
+
+    #[error("AI configuration error: {0}")]
+    AiConfig(String),
+
+    #[error("AI HTTP error: {0}")]
+    AiHttp(String),
+
+    #[error("AI authentication error: {0}")]
+    AiAuthentication(String),
+
+    #[error("AI rate limit exceeded: {0}")]
+    AiRateLimit(String),
+
+    #[error("AI invalid request: {0}")]
+    AiInvalidRequest(String),
+
+    #[error("AI server error: {0}")]
+    AiServerError(String),
+
+    #[error("AI serialization error: {0}")]
+    AiSerialization(String),
+
+    #[error("AI response error: {0}")]
+    AiResponse(String),
 }
 
 pub type Result<T> = std::result::Result<T, BotError>;

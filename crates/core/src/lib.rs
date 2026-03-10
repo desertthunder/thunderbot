@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod ai;
 pub mod bsky;
 pub mod config;
 pub mod db;
@@ -19,6 +20,8 @@ pub struct Settings {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +81,36 @@ pub enum LogFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_ai_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    #[serde(default = "default_ai_temperature")]
+    pub temperature: f64,
+    #[serde(default = "default_ai_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_ai_base_url() -> String {
+    "https://api.z.ai/api/paas/v4".to_string()
+}
+
+fn default_ai_model() -> String {
+    "glm-5".to_string()
+}
+
+fn default_ai_temperature() -> f64 {
+    0.7
+}
+
+fn default_ai_max_tokens() -> u32 {
+    300
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self { name: default_bot_name(), did: String::new() }
@@ -99,6 +132,18 @@ impl Default for DatabaseConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self { level: default_log_level(), format: LogFormat::default() }
+    }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: default_ai_base_url(),
+            model: default_ai_model(),
+            temperature: default_ai_temperature(),
+            max_tokens: default_ai_max_tokens(),
+        }
     }
 }
 
