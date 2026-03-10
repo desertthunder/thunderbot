@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod bsky;
 pub mod config;
 pub mod db;
 pub mod error;

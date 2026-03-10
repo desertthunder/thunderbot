@@ -4,7 +4,7 @@ use owo_colors::OwoColorize;
 mod cli;
 mod commands;
 
-use cli::{Cli, Commands, ConfigAction, DbAction, JetstreamAction, parse_log_level};
+use cli::{AiAction, BskyAction, Cli, Commands, ConfigAction, DbAction, JetstreamAction, parse_log_level};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,12 +45,25 @@ async fn main() -> anyhow::Result<()> {
             DbAction::Thread { root_uri } => commands::db::thread(&settings.database.path, &root_uri, cli.json).await?,
             DbAction::Identities => commands::db::identities(&settings.database.path, cli.json).await?,
         },
+        Commands::Bsky { action } => match action {
+            BskyAction::Login => commands::bsky::login(&settings, cli.json).await?,
+            BskyAction::Whoami => commands::bsky::whoami(&settings, cli.json).await?,
+            BskyAction::Post { text } => commands::bsky::post(&settings, text, cli.json).await?,
+            BskyAction::Reply { uri, text } => commands::bsky::reply(&settings, uri, text, cli.json).await?,
+            BskyAction::Resolve { handle } => commands::bsky::resolve(&settings, handle, cli.json).await?,
+            BskyAction::GetPost { uri } => commands::bsky::get_post(&settings, uri, cli.json).await?,
+        },
+        Commands::Ai { action } => match action {
+            AiAction::Prompt { text: _ } => println!("{}", "AI commands not yet implemented".yellow()),
+            AiAction::Chat => println!("{}", "AI chat not yet implemented".yellow()),
+            AiAction::Context { root_uri: _ } => println!("{}", "AI context not yet implemented".yellow()),
+            AiAction::Simulate { root_uri: _ } => println!("{}", "AI simulate not yet implemented".yellow()),
+        },
         Commands::Status => println!(
             "{}\n  Status: {}",
             "Service Status:".green().bold(),
             "Not running".yellow()
         ),
-        _ => println!("{}", "Command not yet implemented".yellow()),
     }
 
     Ok(())
