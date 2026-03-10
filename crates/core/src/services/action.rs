@@ -16,6 +16,7 @@ use crate::ai::types::ChatCompletionRequest;
 use crate::bsky::{BskyClient, CreateRecordResponse, StrongRef};
 use crate::db::models::{CreateConversationParams, Role};
 use crate::db::repository::{ConversationRepository, IdentityRepository};
+use crate::embedding::EmbeddingPipelineMessage;
 use crate::error::{BotError, Result};
 use crate::jetstream::filter::FilteredEvent;
 use crate::jetstream::types::JetstreamEvent;
@@ -25,6 +26,7 @@ use crate::services::thread::{
 use rand::RngExt;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 /// Action pipeline for processing mentions
 pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> {
@@ -34,6 +36,7 @@ pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + Clone
     prompt_builder: PromptBuilder,
     bot_did: String,
     dry_run: bool,
+    embedding_sender: Option<mpsc::Sender<EmbeddingPipelineMessage>>,
 }
 
 /// Result of processing a mention
@@ -53,12 +56,18 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
     pub fn new(
         ai_client: Glm5Client, bsky_client: BskyClient, repo: R, prompt_builder: PromptBuilder, bot_did: String,
     ) -> Self {
-        Self { ai_client, bsky_client, repo, prompt_builder, bot_did, dry_run: false }
+        Self { ai_client, bsky_client, repo, prompt_builder, bot_did, dry_run: false, embedding_sender: None }
     }
 
     /// Enable dry-run mode (process but don't post)
     pub fn with_dry_run(mut self) -> Self {
         self.dry_run = true;
+        self
+    }
+
+    /// Set the embedding pipeline sender for creating embedding jobs
+    pub fn with_embedding_sender(mut self, sender: mpsc::Sender<EmbeddingPipelineMessage>) -> Self {
+        self.embedding_sender = Some(sender);
         self
     }
 
@@ -114,8 +123,26 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             created_at: created_at.clone(),
         };
 
-        self.repo.create_conversation(mention_params).await?;
-        tracing::info!(post_uri = %post_uri, "Stored incoming mention");
+        let was_inserted = self.repo.create_conversation(mention_params).await?;
+        tracing::info!(post_uri = %post_uri, was_inserted = was_inserted, "Stored incoming mention");
+
+        if was_inserted
+            && let Some(ref sender) = self.embedding_sender
+            && let Ok(Some(conversation)) = self.repo.get_by_post_uri(&post_uri).await
+        {
+            let msg = EmbeddingPipelineMessage::CreateJob {
+                conversation_id: conversation.id,
+                content: content.clone(),
+                root_uri: root_uri.clone(),
+                author_did: author_did.clone(),
+            };
+            match sender.try_send(msg) {
+                Ok(_) => tracing::debug!(conversation_id = conversation.id, "Queued embedding job"),
+                Err(e) => {
+                    tracing::warn!(conversation_id = conversation.id, error = %e, "Failed to queue embedding job")
+                }
+            }
+        }
 
         let thread = self.repo.get_thread_by_root(&root_uri).await?;
         tracing::debug!(
@@ -203,11 +230,29 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
 
-            self.repo.create_conversation(bot_reply_params).await?;
+            let was_inserted = self.repo.create_conversation(bot_reply_params).await?;
             tracing::debug!(
                 reply_uri = %reply.uri,
+                was_inserted = was_inserted,
                 "Stored bot reply in database"
             );
+
+            if was_inserted
+                && let Some(ref sender) = self.embedding_sender
+                && let Ok(Some(conversation)) = self.repo.get_by_post_uri(&reply.uri).await
+            {
+                let msg = EmbeddingPipelineMessage::CreateJob {
+                    conversation_id: conversation.id,
+                    content: response_text.clone(),
+                    root_uri: root_uri.clone(),
+                    author_did: self.bot_did.clone(),
+                };
+                if let Err(e) = sender.try_send(msg) {
+                    tracing::warn!(conversation_id = conversation.id, error = %e, "Failed to queue bot reply embedding job");
+                } else {
+                    tracing::debug!(conversation_id = conversation.id, "Queued bot reply embedding job");
+                }
+            }
         }
 
         Ok(ActionResult {

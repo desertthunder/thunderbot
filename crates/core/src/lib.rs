@@ -5,6 +5,7 @@ pub mod ai;
 pub mod bsky;
 pub mod config;
 pub mod db;
+pub mod embedding;
 pub mod error;
 pub mod jetstream;
 pub mod processor;
@@ -22,6 +23,10 @@ pub struct Settings {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub ai: AiConfig,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +114,54 @@ fn default_ai_temperature() -> f64 {
 
 fn default_ai_max_tokens() -> u32 {
     300
+}
+
+pub use embedding::EmbeddingConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    #[serde(default = "default_memory_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_ttl_days")]
+    pub ttl_days: u32,
+    #[serde(default = "default_consolidation_ttl_days")]
+    pub consolidation_ttl_days: u32,
+    #[serde(default = "default_dedup_threshold")]
+    pub dedup_threshold: f64,
+    #[serde(default = "default_consolidation_delay_hours")]
+    pub consolidation_delay_hours: u32,
+}
+
+fn default_memory_enabled() -> bool {
+    true
+}
+
+fn default_ttl_days() -> u32 {
+    90
+}
+
+fn default_consolidation_ttl_days() -> u32 {
+    365
+}
+
+fn default_dedup_threshold() -> f64 {
+    0.05
+}
+
+fn default_consolidation_delay_hours() -> u32 {
+    24
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_memory_enabled(),
+            ttl_days: default_ttl_days(),
+            consolidation_ttl_days: default_consolidation_ttl_days(),
+            dedup_threshold: default_dedup_threshold(),
+            consolidation_delay_hours: default_consolidation_delay_hours(),
+        }
+    }
 }
 
 impl Default for BotConfig {

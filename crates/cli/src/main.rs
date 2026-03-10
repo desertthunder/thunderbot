@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
                 commands::ai::simulate(&settings.ai, &settings.database.path, root_uri, cli.json).await?
             }
         },
+        Commands::Vector { ref action } => commands::vector::handle(action.clone(), &cli, &settings).await?,
         Commands::Status => println!(
             "{}\n  Status: {}",
             "Service Status:".green().bold(),

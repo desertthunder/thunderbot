@@ -62,6 +62,18 @@ pub enum BotError {
 
     #[error("AI response error: {0}")]
     AiResponse(String),
+
+    #[error("Embedding configuration error: {0}")]
+    EmbeddingConfig(String),
+
+    #[error("Embedding error: {0}")]
+    Embedding(String),
+
+    #[error("Embedding rate limit exceeded: {0}")]
+    EmbeddingRateLimit(String),
+
+    #[error("Embedding server error: {0}")]
+    EmbeddingServerError(String),
 }
 
 pub type Result<T> = std::result::Result<T, BotError>;

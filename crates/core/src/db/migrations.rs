@@ -3,7 +3,13 @@ use libsql::{Connection, Database};
 use crate::error::BotError;
 
 /// List of all migrations to be applied
-const MIGRATIONS: &[(&str, &str)] = &[("001_initial", include_str!("../../migrations/001_initial.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_initial", include_str!("../../migrations/001_initial.sql")),
+    (
+        "002_vector_memory",
+        include_str!("../../migrations/002_vector_memory.sql"),
+    ),
+];
 
 /// Runs all pending migrations on the database
 pub async fn run_migrations(db: &Database) -> Result<(), BotError> {

@@ -59,6 +59,12 @@ pub enum Commands {
         action: AiAction,
     },
 
+    #[command(about = "Vector memory commands")]
+    Vector {
+        #[command(subcommand)]
+        action: VectorAction,
+    },
+
     #[command(about = "Show service status")]
     Status,
 }
@@ -144,6 +150,36 @@ pub enum AiAction {
 
     #[command(about = "Simulate a response without posting")]
     Simulate { root_uri: String },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum VectorAction {
+    #[command(about = "Show vector store statistics")]
+    Stats,
+
+    #[command(about = "Semantic search across all memories")]
+    Search {
+        query: String,
+        #[arg(long, help = "Number of results to return")]
+        top_k: Option<usize>,
+        #[arg(long, help = "Filter by author DID")]
+        author: Option<String>,
+    },
+
+    #[command(about = "Generate and display raw embedding vector")]
+    Embed { text: String },
+
+    #[command(about = "Backfill embeddings for all conversations")]
+    Backfill {
+        #[arg(long, help = "Batch size for processing")]
+        batch_size: Option<usize>,
+    },
+
+    #[command(about = "Consolidate stale thread memories")]
+    Consolidate,
+
+    #[command(about = "Remove expired memories")]
+    Expire,
 }
 
 pub fn parse_log_level(verbose: u8) -> String {

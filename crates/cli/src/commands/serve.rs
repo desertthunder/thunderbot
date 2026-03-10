@@ -1,10 +1,12 @@
 use owo_colors::OwoColorize;
+use std::sync::Arc;
 use tnbot_core::Settings;
 use tnbot_core::ai::{DEFAULT_CONSTITUTION, Glm5Client, Glm5Config, PromptBuilder};
 use tnbot_core::bsky::BskyClient;
 use tnbot_core::db::connection::DatabaseManager;
 use tnbot_core::db::migrations::run_migrations;
 use tnbot_core::db::repository::LibsqlRepository;
+use tnbot_core::embedding::{EmbeddingPipeline, EmbeddingPipelineConfig};
 use tnbot_core::jetstream::{EventProcessor, FilteredEvent, ProcessedEvent};
 use tnbot_core::services::ActionPipeline;
 
@@ -96,12 +98,43 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     run_migrations(db_manager.db()).await?;
 
     let conn = db_manager.db().connect()?;
-    let repo = LibsqlRepository::new(conn);
+    let repo = Arc::new(LibsqlRepository::new(conn));
 
-    let mut action_pipeline =
-        ActionPipeline::new(ai_client, bsky_client, repo, prompt_builder, settings.bot.did.clone());
+    let embedding_sender = if settings.memory.enabled {
+        tracing::info!("Initializing embedding pipeline...");
+        let provider = Arc::from(settings.embedding.create_provider());
+        let pipeline_config = EmbeddingPipelineConfig {
+            poll_interval_secs: 30,
+            batch_size: settings.embedding.batch_size,
+            dedup_threshold: settings.memory.dedup_threshold,
+            max_retries: 3,
+        };
+
+        let (pipeline, rx) = EmbeddingPipeline::new(repo.clone(), provider, pipeline_config);
+
+        let sender = pipeline.sender();
+
+        tokio::spawn(async move { pipeline.run(rx).await });
+
+        tracing::info!("Embedding pipeline started");
+        Some(sender)
+    } else {
+        tracing::info!("Embedding pipeline disabled");
+        None
+    };
+
+    let mut action_pipeline = ActionPipeline::new(
+        ai_client,
+        bsky_client,
+        (*repo).clone(),
+        prompt_builder,
+        settings.bot.did.clone(),
+    );
     if dry_run {
         action_pipeline = action_pipeline.with_dry_run();
+    }
+    if let Some(sender) = embedding_sender {
+        action_pipeline = action_pipeline.with_embedding_sender(sender);
     }
 
     let processor = ActionEventProcessor::new(action_pipeline);
