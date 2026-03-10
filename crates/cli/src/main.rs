@@ -54,10 +54,14 @@ async fn main() -> anyhow::Result<()> {
             BskyAction::GetPost { uri } => commands::bsky::get_post(&settings, uri, cli.json).await?,
         },
         Commands::Ai { action } => match action {
-            AiAction::Prompt { text: _ } => println!("{}", "AI commands not yet implemented".yellow()),
-            AiAction::Chat => println!("{}", "AI chat not yet implemented".yellow()),
-            AiAction::Context { root_uri: _ } => println!("{}", "AI context not yet implemented".yellow()),
-            AiAction::Simulate { root_uri: _ } => println!("{}", "AI simulate not yet implemented".yellow()),
+            AiAction::Prompt { text } => commands::ai::prompt(&settings.ai, text, cli.json).await?,
+            AiAction::Chat => commands::ai::chat(&settings.ai).await?,
+            AiAction::Context { root_uri } => {
+                commands::ai::context(&settings.ai, &settings.database.path, root_uri, cli.json).await?
+            }
+            AiAction::Simulate { root_uri } => {
+                commands::ai::simulate(&settings.ai, &settings.database.path, root_uri, cli.json).await?
+            }
         },
         Commands::Status => println!(
             "{}\n  Status: {}",
