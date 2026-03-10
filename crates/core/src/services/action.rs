@@ -14,12 +14,14 @@ use crate::ai::client::Glm5Client;
 use crate::ai::prompt::PromptBuilder;
 use crate::ai::types::ChatCompletionRequest;
 use crate::bsky::{BskyClient, CreateRecordResponse, StrongRef};
+use crate::db::models::MemorySearchFilters;
 use crate::db::models::{CreateConversationParams, Role};
-use crate::db::repository::{ConversationRepository, IdentityRepository};
+use crate::db::repository::{ConversationRepository, IdentityRepository, MemoryRepository};
 use crate::embedding::EmbeddingPipelineMessage;
 use crate::error::{BotError, Result};
 use crate::jetstream::filter::FilteredEvent;
 use crate::jetstream::types::JetstreamEvent;
+use crate::services::memory::MemoryRetriever;
 use crate::services::thread::{
     extract_created_at, extract_parent_uri, extract_root_cid, extract_root_uri, extract_text,
 };
@@ -29,7 +31,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Action pipeline for processing mentions
-pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> {
+pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone + Send + Sync> {
     ai_client: Glm5Client,
     bsky_client: BskyClient,
     repo: R,
@@ -37,6 +39,7 @@ pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + Clone
     bot_did: String,
     dry_run: bool,
     embedding_sender: Option<mpsc::Sender<EmbeddingPipelineMessage>>,
+    memory_retriever: Option<MemoryRetriever<R>>,
 }
 
 /// Result of processing a mention
@@ -51,12 +54,21 @@ pub struct ActionResult {
     pub error: Option<String>,
 }
 
-impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> ActionPipeline<R> {
+impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone + Send + Sync> ActionPipeline<R> {
     /// Create a new action pipeline
     pub fn new(
         ai_client: Glm5Client, bsky_client: BskyClient, repo: R, prompt_builder: PromptBuilder, bot_did: String,
     ) -> Self {
-        Self { ai_client, bsky_client, repo, prompt_builder, bot_did, dry_run: false, embedding_sender: None }
+        Self {
+            ai_client,
+            bsky_client,
+            repo,
+            prompt_builder,
+            bot_did,
+            dry_run: false,
+            embedding_sender: None,
+            memory_retriever: None,
+        }
     }
 
     /// Enable dry-run mode (process but don't post)
@@ -68,6 +80,12 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
     /// Set the embedding pipeline sender for creating embedding jobs
     pub fn with_embedding_sender(mut self, sender: mpsc::Sender<EmbeddingPipelineMessage>) -> Self {
         self.embedding_sender = Some(sender);
+        self
+    }
+
+    /// Set memory retriever for hybrid RAG context injection.
+    pub fn with_memory_retriever(mut self, retriever: MemoryRetriever<R>) -> Self {
+        self.memory_retriever = Some(retriever);
         self
     }
 
@@ -151,11 +169,59 @@ impl<R: ConversationRepository + IdentityRepository + Clone + Send + Sync> Actio
             "Fetched thread context"
         );
 
-        let identity_map = self.build_identity_map(&thread).await?;
+        let mut identity_map = self.build_identity_map(&thread).await?;
+
+        let memory_lines = if let Some(retriever) = &self.memory_retriever {
+            let filters = MemorySearchFilters { exclude_root_uri: Some(root_uri.clone()), ..Default::default() };
+            match retriever.retrieve_hybrid(&content, filters, Some(5)).await {
+                Ok(memories) => {
+                    let mut lines = Vec::with_capacity(memories.len());
+                    for result in memories {
+                        let did = result.memory.author_did.clone();
+                        let handle = if let Some(existing) = identity_map.get(&did) {
+                            existing.clone()
+                        } else {
+                            let resolved = match self.repo.get_by_did(&did).await? {
+                                Some(identity) => identity.handle,
+                                None => did.clone(),
+                            };
+                            identity_map.insert(did.clone(), resolved.clone());
+                            resolved
+                        };
+
+                        let date = result
+                            .memory
+                            .created_at
+                            .split('T')
+                            .next()
+                            .unwrap_or(result.memory.created_at.as_str());
+                        lines.push(format!(
+                            "[{} @{} | {}] {}",
+                            date,
+                            handle,
+                            format!("{:?}", result.source).to_lowercase(),
+                            result.memory.content
+                        ));
+                    }
+                    lines
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to retrieve memory context for RAG");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         let resolve_handle = |did: &str| identity_map.get(did).map(|s| s.as_str()).unwrap_or(did).to_string();
 
-        let messages = self.prompt_builder.build(&thread, resolve_handle);
+        let messages = if memory_lines.is_empty() {
+            self.prompt_builder.build(&thread, resolve_handle)
+        } else {
+            self.prompt_builder
+                .build_with_memories(&thread, &memory_lines, resolve_handle)
+        };
         let request = ChatCompletionRequest::new(self.ai_client.model(), messages).with_thinking();
 
         let ai_response = self.ai_client.chat_completion(request).await?;

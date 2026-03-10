@@ -9,6 +9,8 @@
 use crate::db::repository::{ConversationRepository, LibsqlRepository, MemoryRepository};
 use crate::embedding::EmbeddingProvider;
 use crate::error::BotError;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -40,11 +42,13 @@ pub struct EmbeddingPipelineConfig {
     pub dedup_threshold: f64,
     /// Maximum number of retry attempts
     pub max_retries: u32,
+    /// TTL for per-post memories
+    pub post_ttl_days: u32,
 }
 
 impl Default for EmbeddingPipelineConfig {
     fn default() -> Self {
-        Self { poll_interval_secs: 30, batch_size: 32, dedup_threshold: 0.05, max_retries: 3 }
+        Self { poll_interval_secs: 30, batch_size: 32, dedup_threshold: 0.05, max_retries: 3, post_ttl_days: 90 }
     }
 }
 
@@ -82,7 +86,7 @@ impl EmbeddingPipeline {
         loop {
             tokio::select! {
                 _ = poll_interval.tick() => {
-                    if let Err(e) = self.process_pending_jobs().await {
+                    if let Err(e) = self.process_pending_once().await {
                         tracing::error!("Failed to process pending jobs: {}", e);
                     }
                 }
@@ -94,7 +98,7 @@ impl EmbeddingPipeline {
                             }
                         }
                         EmbeddingPipelineMessage::ProcessPending => {
-                            if let Err(e) = self.process_pending_jobs().await {
+                            if let Err(e) = self.process_pending_once().await {
                                 tracing::error!("Failed to process pending jobs: {}", e);
                             }
                         }
@@ -115,6 +119,16 @@ impl EmbeddingPipeline {
     async fn create_embedding_job(
         &self, conversation_id: i64, content: &str, root_uri: &str, _: &str,
     ) -> Result<(), BotError> {
+        let content_hash = hash_content(content);
+        if let Some(existing) = self.repo.get_memory_by_root_and_hash(root_uri, &content_hash).await? {
+            tracing::debug!(
+                conversation_id = conversation_id,
+                existing_id = existing.id,
+                "Skipping duplicate content by hash"
+            );
+            return Ok(());
+        }
+
         if let Some(existing) = self.check_for_duplicate(root_uri, content).await? {
             tracing::debug!(
                 conversation_id = conversation_id,
@@ -188,32 +202,48 @@ impl EmbeddingPipeline {
     }
 
     /// Process pending embedding jobs
-    async fn process_pending_jobs(&self) -> Result<(), BotError> {
-        let pending_jobs = self.repo.get_pending_jobs(self.config.batch_size as i64).await?;
+    async fn process_pending_jobs(&self) -> Result<usize, BotError> {
+        let pending_jobs = self
+            .repo
+            .get_pending_jobs(self.config.batch_size as i64, self.config.max_retries)
+            .await?;
 
         if pending_jobs.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         tracing::info!(count = pending_jobs.len(), "Processing pending embedding jobs");
 
-        for (job_id, conversation_id, _created_at) in pending_jobs {
+        let mut processed = 0usize;
+        for (job_id, conversation_id, _created_at, attempts) in pending_jobs {
             match self.process_job(job_id, conversation_id).await {
                 Ok(()) => {
                     tracing::debug!(job_id = job_id, "Successfully processed embedding job");
+                    processed += 1;
                 }
                 Err(e) => {
                     tracing::error!(job_id = job_id, error = %e, "Failed to process embedding job");
 
                     let error_msg = e.to_string();
-                    if let Err(update_err) = self.repo.update_embedding_job(job_id, "failed", Some(&error_msg)).await {
+                    if let Err(update_err) = self
+                        .repo
+                        .fail_embedding_job(job_id, self.config.max_retries, &error_msg)
+                        .await
+                    {
                         tracing::error!(job_id = job_id, error = %update_err, "Failed to update job status");
+                    } else {
+                        tracing::warn!(
+                            job_id = job_id,
+                            attempts = attempts + 1,
+                            max_retries = self.config.max_retries,
+                            "Embedding job failed; retry status updated"
+                        );
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(processed)
     }
 
     /// Process a single embedding job
@@ -229,22 +259,57 @@ impl EmbeddingPipeline {
             }
         };
 
+        let content_hash = hash_content(&conversation.content);
+        if self
+            .repo
+            .get_memory_by_root_and_hash(&conversation.root_uri, &content_hash)
+            .await?
+            .is_some()
+        {
+            self.repo.complete_embedding_job(job_id).await?;
+            return Ok(());
+        }
+
         let embedding = self.provider.embed(&conversation.content).await?;
 
+        if self
+            .check_for_semantic_duplicate(&conversation.root_uri, &embedding)
+            .await?
+            .is_some()
+        {
+            self.repo.complete_embedding_job(job_id).await?;
+            return Ok(());
+        }
+
+        let created_at = parse_or_now(&conversation.created_at);
+        let expires_at = (created_at + ChronoDuration::days(self.config.post_ttl_days as i64)).to_rfc3339();
+        let metadata = serde_json::json!({
+            "kind": "post",
+            "conversation_id": conversation_id,
+        });
+
         self.repo
-            .create_memory(
+            .create_memory_with_params(crate::db::models::CreateMemoryParams {
                 conversation_id,
-                &conversation.root_uri,
-                &conversation.content,
-                &embedding,
-                &conversation.author_did,
-                &conversation.created_at,
-            )
+                root_uri: conversation.root_uri.clone(),
+                content: conversation.content.clone(),
+                embedding,
+                author_did: conversation.author_did.clone(),
+                metadata: Some(metadata),
+                created_at: conversation.created_at.clone(),
+                expires_at: Some(expires_at),
+                content_hash: Some(content_hash),
+            })
             .await?;
 
-        self.repo.update_embedding_job(job_id, "complete", None).await?;
+        self.repo.complete_embedding_job(job_id).await?;
 
         Ok(())
+    }
+
+    /// Process one pending batch and return number of completed jobs in this pass.
+    pub async fn process_pending_once(&self) -> Result<usize, BotError> {
+        self.process_pending_jobs().await
     }
 
     /// Backfill embeddings for all conversations that don't have them
@@ -290,6 +355,35 @@ impl EmbeddingPipeline {
         tracing::info!(count = count, "Created embedding jobs for backfill");
         Ok(count)
     }
+
+    /// Check for near-duplicate content in the same thread with precomputed embedding
+    async fn check_for_semantic_duplicate(
+        &self, root_uri: &str, candidate_embedding: &[f32],
+    ) -> Result<Option<crate::db::models::Memory>, BotError> {
+        let memories = self.repo.get_memories_by_root(root_uri).await?;
+        for memory in memories {
+            if let Some(ref existing_embedding) = memory.embedding {
+                let distance = cosine_distance(candidate_embedding, existing_embedding);
+                if distance < self.config.dedup_threshold {
+                    return Ok(Some(memory));
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn parse_or_now(ts: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
+fn hash_content(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let hash = hasher.finalize();
+    format!("{hash:x}")
 }
 
 /// Calculate cosine distance between two vectors

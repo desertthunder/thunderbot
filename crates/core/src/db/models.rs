@@ -122,6 +122,7 @@ pub struct Memory {
     pub embedding: Option<Vec<f32>>,
     pub author_did: String,
     pub metadata: Option<serde_json::Value>,
+    pub content_hash: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -184,6 +185,7 @@ pub struct CreateMemoryParams {
     pub metadata: Option<serde_json::Value>,
     pub created_at: String,
     pub expires_at: Option<String>,
+    pub content_hash: Option<String>,
 }
 
 /// Parameters for creating a new embedding job
@@ -208,8 +210,19 @@ pub struct SemanticSearchParams {
     pub query_embedding: Vec<f32>,
     pub top_k: usize,
     pub author_filter: Option<String>,
+    pub root_uri: Option<String>,
+    pub exclude_root_uri: Option<String>,
     pub time_after: Option<String>,
     pub min_score: Option<f64>,
+}
+
+/// Optional filters used for memory search.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemorySearchFilters {
+    pub author_did: Option<String>,
+    pub root_uri: Option<String>,
+    pub exclude_root_uri: Option<String>,
+    pub time_after: Option<String>,
 }
 
 /// Search source for hybrid search results

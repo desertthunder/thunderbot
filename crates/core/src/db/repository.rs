@@ -1,7 +1,10 @@
 use crate::db::models::{Conversation, CursorState, FailedEvent, Identity, Memory, Role};
-use crate::db::models::{CreateConversationParams, CreateFailedEventParams, CreateIdentityParams, UpdateCursorParams};
+use crate::db::models::{
+    CreateConversationParams, CreateFailedEventParams, CreateIdentityParams, CreateMemoryParams, UpdateCursorParams,
+};
 use crate::error::BotError;
 use async_trait::async_trait;
+use chrono::Utc;
 use libsql::Connection;
 
 /// Repository trait for conversation operations
@@ -92,19 +95,41 @@ pub trait MemoryRepository: Send + Sync {
         created_at: &str,
     ) -> Result<i64, BotError>;
 
+    /// Create a new memory entry with metadata, expiry and deterministic content hash.
+    async fn create_memory_with_params(&self, params: CreateMemoryParams) -> Result<i64, BotError>;
+
     /// Get memories by root URI
     async fn get_memories_by_root(&self, root_uri: &str) -> Result<Vec<Memory>, BotError>;
 
+    /// Get a memory by root URI and content hash (used for deterministic deduplication).
+    async fn get_memory_by_root_and_hash(&self, root_uri: &str, content_hash: &str)
+    -> Result<Option<Memory>, BotError>;
+
     /// Search memories by semantic similarity
     async fn search_semantic(&self, query_embedding: &[f32], top_k: usize) -> Result<Vec<Memory>, BotError>;
+
+    /// Search memories semantically with optional metadata filters.
+    async fn search_semantic_filtered(
+        &self, query_embedding: &[f32], top_k: usize, author_did: Option<&str>, time_after: Option<&str>,
+        root_uri: Option<&str>, exclude_root_uri: Option<&str>,
+    ) -> Result<Vec<Memory>, BotError>;
 
     /// Search memories by author
     async fn search_by_author(
         &self, author_did: &str, query_embedding: &[f32], top_k: usize,
     ) -> Result<Vec<Memory>, BotError>;
 
+    /// Search memories using FTS5 keyword matching with optional filters.
+    async fn search_keyword(
+        &self, query: &str, top_k: usize, author_did: Option<&str>, time_after: Option<&str>, root_uri: Option<&str>,
+        exclude_root_uri: Option<&str>,
+    ) -> Result<Vec<Memory>, BotError>;
+
     /// Delete expired memories
     async fn delete_expired(&self) -> Result<u64, BotError>;
+
+    /// Delete all memories for a given root URI.
+    async fn delete_memories_by_root(&self, root_uri: &str) -> Result<u64, BotError>;
 
     /// Count total memories
     async fn count_memories(&self) -> Result<i64, BotError>;
@@ -113,7 +138,13 @@ pub trait MemoryRepository: Send + Sync {
     async fn create_embedding_job(&self, conversation_id: i64, created_at: &str) -> Result<i64, BotError>;
 
     /// Get pending embedding jobs
-    async fn get_pending_jobs(&self, limit: i64) -> Result<Vec<(i64, i64, String)>, BotError>;
+    async fn get_pending_jobs(&self, limit: i64, max_attempts: u32) -> Result<Vec<(i64, i64, String, u32)>, BotError>;
+
+    /// Mark an embedding job as complete.
+    async fn complete_embedding_job(&self, job_id: i64) -> Result<(), BotError>;
+
+    /// Record an embedding job failure. Returns `true` if retries are exhausted and the job is now failed.
+    async fn fail_embedding_job(&self, job_id: i64, max_attempts: u32, error: &str) -> Result<bool, BotError>;
 
     /// Update embedding job status
     async fn update_embedding_job(&self, job_id: i64, status: &str, error: Option<&str>) -> Result<(), BotError>;
@@ -660,6 +691,9 @@ fn parse_memory_row(row: &libsql::Row) -> Result<Memory, BotError> {
             .get(5)
             .map_err(|e| BotError::Database(format!("Failed to parse author_did: {}", e)))?,
         metadata,
+        content_hash: row
+            .get(9)
+            .map_err(|e| BotError::Database(format!("Failed to parse content_hash: {}", e)))?,
         created_at: row
             .get(7)
             .map_err(|e| BotError::Database(format!("Failed to parse created_at: {}", e)))?,
@@ -676,19 +710,39 @@ impl MemoryRepository for LibsqlRepository {
         &self, conversation_id: i64, root_uri: &str, content: &str, embedding: &[f32], author_did: &str,
         created_at: &str,
     ) -> Result<i64, BotError> {
-        let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.create_memory_with_params(CreateMemoryParams {
+            conversation_id,
+            root_uri: root_uri.to_string(),
+            content: content.to_string(),
+            embedding: embedding.to_vec(),
+            author_did: author_did.to_string(),
+            metadata: None,
+            created_at: created_at.to_string(),
+            expires_at: None,
+            content_hash: None,
+        })
+        .await
+    }
+
+    async fn create_memory_with_params(&self, params: CreateMemoryParams) -> Result<i64, BotError> {
+        let embedding_bytes: Vec<u8> = params.embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let metadata_json = params.metadata.as_ref().map(serde_json::Value::to_string);
 
         self.conn
             .execute(
-                "INSERT INTO memories (conversation_id, root_uri, content, embedding, author_did, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO memories
+                 (conversation_id, root_uri, content, embedding, author_did, metadata, created_at, expires_at, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 (
-                    conversation_id,
-                    root_uri,
-                    content,
+                    params.conversation_id,
+                    params.root_uri.as_str(),
+                    params.content.as_str(),
                     embedding_bytes,
-                    author_did,
-                    created_at,
+                    params.author_did.as_str(),
+                    metadata_json.as_deref(),
+                    params.created_at.as_str(),
+                    params.expires_at.as_deref(),
+                    params.content_hash.as_deref(),
                 ),
             )
             .await
@@ -715,7 +769,7 @@ impl MemoryRepository for LibsqlRepository {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, conversation_id, root_uri, content, embedding, author_did, metadata, created_at, expires_at
+                "SELECT id, conversation_id, root_uri, content, embedding, author_did, metadata, created_at, expires_at, content_hash
                  FROM memories WHERE root_uri = ?1 ORDER BY created_at DESC",
                 [root_uri],
             )
@@ -730,8 +784,35 @@ impl MemoryRepository for LibsqlRepository {
         Ok(memories)
     }
 
+    async fn get_memory_by_root_and_hash(
+        &self, root_uri: &str, content_hash: &str,
+    ) -> Result<Option<Memory>, BotError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, conversation_id, root_uri, content, embedding, author_did, metadata, created_at, expires_at, content_hash
+                 FROM memories WHERE root_uri = ?1 AND content_hash = ?2
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                (root_uri, content_hash),
+            )
+            .await
+            .map_err(|e| BotError::Database(format!("Failed to get memory by hash: {}", e)))?;
+
+        if let Ok(Some(row)) = rows.next().await { Ok(Some(parse_memory_row(&row)?)) } else { Ok(None) }
+    }
+
     async fn search_semantic(&self, query_embedding: &[f32], top_k: usize) -> Result<Vec<Memory>, BotError> {
+        self.search_semantic_filtered(query_embedding, top_k, None, None, None, None)
+            .await
+    }
+
+    async fn search_semantic_filtered(
+        &self, query_embedding: &[f32], top_k: usize, author_did: Option<&str>, time_after: Option<&str>,
+        root_uri: Option<&str>, exclude_root_uri: Option<&str>,
+    ) -> Result<Vec<Memory>, BotError> {
         let embedding_bytes: Vec<u8> = query_embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let candidate_k = (top_k.max(1)).saturating_mul(10) as i64;
 
         let mut rows = self
             .conn
@@ -746,11 +827,26 @@ impl MemoryRepository for LibsqlRepository {
                     m.metadata,
                     m.created_at,
                     m.expires_at,
+                    m.content_hash,
                     vector_distance_cos(m.embedding, vector32(?1)) as distance
                  FROM vector_top_k(libsql_vector_idx, vector32(?1), ?2) AS top_k
                  JOIN memories AS m ON m.rowid = top_k.rowid
-                 ORDER BY distance ASC",
-                (embedding_bytes, top_k as i64),
+                 WHERE (?3 IS NULL OR m.author_did = ?3)
+                   AND (?4 IS NULL OR m.created_at >= ?4)
+                   AND (?5 IS NULL OR m.root_uri = ?5)
+                   AND (?6 IS NULL OR m.root_uri != ?6)
+                   AND (m.expires_at IS NULL OR julianday(m.expires_at) > julianday('now'))
+                 ORDER BY distance ASC
+                 LIMIT ?7",
+                (
+                    embedding_bytes,
+                    candidate_k,
+                    author_did,
+                    time_after,
+                    root_uri,
+                    exclude_root_uri,
+                    top_k as i64,
+                ),
             )
             .await
             .map_err(|e| BotError::Database(format!("Failed to search semantic: {}", e)))?;
@@ -758,7 +854,7 @@ impl MemoryRepository for LibsqlRepository {
         let mut memories = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
             let mut memory = parse_memory_row(&row)?;
-            memory.distance = row.get::<f64>(9).ok();
+            memory.distance = row.get::<f64>(10).ok();
             memories.push(memory);
         }
 
@@ -768,8 +864,14 @@ impl MemoryRepository for LibsqlRepository {
     async fn search_by_author(
         &self, author_did: &str, query_embedding: &[f32], top_k: usize,
     ) -> Result<Vec<Memory>, BotError> {
-        let embedding_bytes: Vec<u8> = query_embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.search_semantic_filtered(query_embedding, top_k, Some(author_did), None, None, None)
+            .await
+    }
 
+    async fn search_keyword(
+        &self, query: &str, top_k: usize, author_did: Option<&str>, time_after: Option<&str>, root_uri: Option<&str>,
+        exclude_root_uri: Option<&str>,
+    ) -> Result<Vec<Memory>, BotError> {
         let mut rows = self
             .conn
             .query(
@@ -783,20 +885,27 @@ impl MemoryRepository for LibsqlRepository {
                     m.metadata,
                     m.created_at,
                     m.expires_at,
-                    vector_distance_cos(m.embedding, vector32(?1)) as distance
-                 FROM vector_top_k(libsql_vector_idx, vector32(?1), ?3) AS top_k
-                 JOIN memories AS m ON m.rowid = top_k.rowid
-                 WHERE m.author_did = ?2
-                 ORDER BY distance ASC",
-                (embedding_bytes, author_did, top_k as i64),
+                    m.content_hash,
+                    bm25(memories_fts) AS rank
+                 FROM memories_fts
+                 JOIN memories m ON m.id = memories_fts.rowid
+                 WHERE memories_fts MATCH ?1
+                   AND (?2 IS NULL OR m.author_did = ?2)
+                   AND (?3 IS NULL OR m.created_at >= ?3)
+                   AND (?4 IS NULL OR m.root_uri = ?4)
+                   AND (?5 IS NULL OR m.root_uri != ?5)
+                   AND (m.expires_at IS NULL OR julianday(m.expires_at) > julianday('now'))
+                 ORDER BY rank ASC
+                 LIMIT ?6",
+                (query, author_did, time_after, root_uri, exclude_root_uri, top_k as i64),
             )
             .await
-            .map_err(|e| BotError::Database(format!("Failed to search by author: {}", e)))?;
+            .map_err(|e| BotError::Database(format!("Failed to search keyword: {}", e)))?;
 
         let mut memories = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
             let mut memory = parse_memory_row(&row)?;
-            memory.distance = row.get::<f64>(9).ok();
+            memory.distance = row.get::<f64>(10).ok();
             memories.push(memory);
         }
 
@@ -807,12 +916,23 @@ impl MemoryRepository for LibsqlRepository {
         let result = self
             .conn
             .execute(
-                "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+                "DELETE FROM memories
+                 WHERE expires_at IS NOT NULL
+                   AND julianday(expires_at) <= julianday('now')",
                 (),
             )
             .await
             .map_err(|e| BotError::Database(format!("Failed to delete expired memories: {}", e)))?;
 
+        Ok(result as u64)
+    }
+
+    async fn delete_memories_by_root(&self, root_uri: &str) -> Result<u64, BotError> {
+        let result = self
+            .conn
+            .execute("DELETE FROM memories WHERE root_uri = ?1", [root_uri])
+            .await
+            .map_err(|e| BotError::Database(format!("Failed to delete memories by root: {}", e)))?;
         Ok(result as u64)
     }
 
@@ -832,7 +952,8 @@ impl MemoryRepository for LibsqlRepository {
     }
 
     async fn create_embedding_job(&self, conversation_id: i64, created_at: &str) -> Result<i64, BotError> {
-        self.conn
+        let changed = self
+            .conn
             .execute(
                 "INSERT OR IGNORE INTO embedding_jobs (conversation_id, status, created_at)
                  VALUES (?1, 'pending', ?2)",
@@ -844,50 +965,37 @@ impl MemoryRepository for LibsqlRepository {
                 BotError::Database(format!("Failed to create embedding job: {}", e))
             })?;
 
+        if changed == 0 {
+            return Ok(0);
+        }
+
         let mut rows = self
             .conn
-            .query("SELECT last_insert_rowid()", ())
+            .query(
+                "SELECT id FROM embedding_jobs WHERE conversation_id = ?1",
+                [conversation_id],
+            )
             .await
-            .map_err(|e| BotError::Database(format!("Failed to get last insert rowid: {}", e)))?;
+            .map_err(|e| BotError::Database(format!("Failed to get created embedding job: {}", e)))?;
 
         if let Ok(Some(row)) = rows.next().await {
-            let id: i64 = row
-                .get(0)
-                .map_err(|e| BotError::Database(format!("Failed to parse rowid: {}", e)))?;
-            if id > 0 {
-                Ok(id)
-            } else {
-                let mut rows = self
-                    .conn
-                    .query(
-                        "SELECT id FROM embedding_jobs WHERE conversation_id = ?1",
-                        [conversation_id],
-                    )
-                    .await
-                    .map_err(|e| BotError::Database(format!("Failed to get existing job: {}", e)))?;
-
-                if let Ok(Some(row)) = rows.next().await {
-                    row.get::<i64>(0)
-                        .map_err(|e| BotError::Database(format!("Failed to parse rowid: {}", e)))
-                } else {
-                    Ok(0)
-                }
-            }
+            row.get::<i64>(0)
+                .map_err(|e| BotError::Database(format!("Failed to parse job id: {}", e)))
         } else {
             Ok(0)
         }
     }
 
-    async fn get_pending_jobs(&self, limit: i64) -> Result<Vec<(i64, i64, String)>, BotError> {
+    async fn get_pending_jobs(&self, limit: i64, max_attempts: u32) -> Result<Vec<(i64, i64, String, u32)>, BotError> {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, conversation_id, created_at
+                "SELECT id, conversation_id, created_at, attempts
                  FROM embedding_jobs
-                 WHERE status = 'pending' AND attempts < 3
+                 WHERE status = 'pending' AND attempts < ?2
                  ORDER BY created_at ASC
                  LIMIT ?1",
-                [limit],
+                (limit, max_attempts as i64),
             )
             .await
             .map_err(|e| BotError::Database(format!("Failed to get pending jobs: {}", e)))?;
@@ -903,24 +1011,84 @@ impl MemoryRepository for LibsqlRepository {
             let created_at: String = row
                 .get(2)
                 .map_err(|e| BotError::Database(format!("Failed to parse created_at: {}", e)))?;
-            jobs.push((id, conversation_id, created_at));
+            let attempts: u32 = row
+                .get::<i64>(3)
+                .map_err(|e| BotError::Database(format!("Failed to parse attempts: {}", e)))?
+                as u32;
+            jobs.push((id, conversation_id, created_at, attempts));
         }
 
         Ok(jobs)
     }
 
-    async fn update_embedding_job(&self, job_id: i64, status: &str, error: Option<&str>) -> Result<(), BotError> {
-        let completed_at = if status == "complete" || status == "failed" {
-            Some(chrono::Utc::now().to_rfc3339())
+    async fn complete_embedding_job(&self, job_id: i64) -> Result<(), BotError> {
+        let completed_at = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "UPDATE embedding_jobs
+                 SET status = 'complete',
+                     error = NULL,
+                     completed_at = ?1
+                 WHERE id = ?2",
+                (completed_at.as_str(), job_id),
+            )
+            .await
+            .map_err(|e| BotError::Database(format!("Failed to complete embedding job: {}", e)))?;
+        Ok(())
+    }
+
+    async fn fail_embedding_job(&self, job_id: i64, max_attempts: u32, error: &str) -> Result<bool, BotError> {
+        let mut rows = self
+            .conn
+            .query("SELECT attempts FROM embedding_jobs WHERE id = ?1", [job_id])
+            .await
+            .map_err(|e| BotError::Database(format!("Failed to fetch embedding attempts: {}", e)))?;
+
+        let current_attempts = if let Ok(Some(row)) = rows.next().await {
+            row.get::<i64>(0)
+                .map_err(|e| BotError::Database(format!("Failed to parse attempts: {}", e)))? as u32
         } else {
-            None
+            return Err(BotError::Database(format!(
+                "Embedding job {} not found for failure update",
+                job_id
+            )));
         };
+
+        let next_attempt = current_attempts.saturating_add(1);
+        let exhausted = next_attempt >= max_attempts;
+        let status = if exhausted { "failed" } else { "pending" };
+        let completed_at = if exhausted { Some(Utc::now().to_rfc3339()) } else { None };
 
         self.conn
             .execute(
                 "UPDATE embedding_jobs
                  SET status = ?1,
-                     attempts = attempts + 1,
+                     attempts = ?2,
+                     error = ?3,
+                     completed_at = ?4
+                 WHERE id = ?5",
+                (
+                    status,
+                    next_attempt as i64,
+                    Some(error),
+                    completed_at.as_deref(),
+                    job_id,
+                ),
+            )
+            .await
+            .map_err(|e| BotError::Database(format!("Failed to mark embedding job failure: {}", e)))?;
+
+        Ok(exhausted)
+    }
+
+    async fn update_embedding_job(&self, job_id: i64, status: &str, error: Option<&str>) -> Result<(), BotError> {
+        let completed_at =
+            if status == "complete" || status == "failed" { Some(Utc::now().to_rfc3339()) } else { None };
+
+        self.conn
+            .execute(
+                "UPDATE embedding_jobs
+                 SET status = ?1,
                      error = ?2,
                      completed_at = ?3
                  WHERE id = ?4",

@@ -60,6 +60,50 @@ impl PromptBuilder {
         messages
     }
 
+    /// Build prompt with retrieved memory snippets injected as a second system message.
+    pub fn build_with_memories<F>(
+        &self, thread: &[Conversation], memories: &[String], resolve_handle: F,
+    ) -> Vec<Message>
+    where
+        F: Fn(&str) -> String,
+    {
+        let mut messages = vec![Message::system(&self.system_instruction)];
+
+        if !memories.is_empty() {
+            let mut memory_context = String::from("Relevant context from past conversations:\n");
+            for memory in memories {
+                memory_context.push_str("- ");
+                memory_context.push_str(memory);
+                memory_context.push('\n');
+            }
+            messages.push(Message::system(memory_context.trim_end().to_string()));
+        }
+
+        for row in thread {
+            let content = match row.role {
+                Role::User => {
+                    let handle = resolve_handle(&row.author_did);
+                    format!("[@{}]: {}", handle, row.content)
+                }
+                Role::Model => row.content.clone(),
+            };
+
+            let role = match row.role {
+                Role::User => "user",
+                Role::Model => "assistant",
+            };
+
+            messages.push(Message {
+                role: role.to_string(),
+                content: Some(content),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        messages
+    }
+
     /// Build with an additional user message appended
     ///
     /// Used when processing a new incoming mention that hasn't been stored yet
@@ -232,5 +276,25 @@ mod tests {
 
         builder.set_system_instruction("Updated.");
         assert_eq!(builder.system_instruction(), "Updated.");
+    }
+
+    #[test]
+    fn test_build_with_memories_injects_second_system_message() {
+        let builder = PromptBuilder::new("System A");
+        let thread = vec![create_test_conversation(Role::User, "did:plc:alice", "Hello!")];
+        let memories = vec!["[2026-03-01 @alice] Asked about async Rust".to_string()];
+
+        let messages = builder.build_with_memories(&thread, &memories, |_| "alice.bsky.social".to_string());
+
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "system");
+        assert!(
+            messages[1]
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Relevant context from past conversations")
+        );
+        assert_eq!(messages.len(), 3);
     }
 }

@@ -9,6 +9,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_vector_memory",
         include_str!("../../migrations/002_vector_memory.sql"),
     ),
+    (
+        "003_memory_content_hash",
+        include_str!("../../migrations/003_memory_content_hash.sql"),
+    ),
 ];
 
 /// Runs all pending migrations on the database

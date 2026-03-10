@@ -8,7 +8,7 @@ use tnbot_core::db::migrations::run_migrations;
 use tnbot_core::db::repository::LibsqlRepository;
 use tnbot_core::embedding::{EmbeddingPipeline, EmbeddingPipelineConfig};
 use tnbot_core::jetstream::{EventProcessor, FilteredEvent, ProcessedEvent};
-use tnbot_core::services::ActionPipeline;
+use tnbot_core::services::{ActionPipeline, MemoryRetriever, MemoryRetrieverConfig};
 
 struct ActionEventProcessor {
     pipeline: ActionPipeline<LibsqlRepository>,
@@ -100,6 +100,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     let conn = db_manager.db().connect()?;
     let repo = Arc::new(LibsqlRepository::new(conn));
 
+    let mut memory_retriever = None;
     let embedding_sender = if settings.memory.enabled {
         tracing::info!("Initializing embedding pipeline...");
         let provider = Arc::from(settings.embedding.create_provider());
@@ -108,6 +109,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
             batch_size: settings.embedding.batch_size,
             dedup_threshold: settings.memory.dedup_threshold,
             max_retries: 3,
+            post_ttl_days: settings.memory.ttl_days,
         };
 
         let (pipeline, rx) = EmbeddingPipeline::new(repo.clone(), provider, pipeline_config);
@@ -115,6 +117,12 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
         let sender = pipeline.sender();
 
         tokio::spawn(async move { pipeline.run(rx).await });
+
+        memory_retriever = Some(MemoryRetriever::new(
+            (*repo).clone(),
+            Arc::from(settings.embedding.create_provider()),
+            MemoryRetrieverConfig::default(),
+        ));
 
         tracing::info!("Embedding pipeline started");
         Some(sender)
@@ -135,6 +143,9 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     }
     if let Some(sender) = embedding_sender {
         action_pipeline = action_pipeline.with_embedding_sender(sender);
+    }
+    if let Some(retriever) = memory_retriever {
+        action_pipeline = action_pipeline.with_memory_retriever(retriever);
     }
 
     let processor = ActionEventProcessor::new(action_pipeline);

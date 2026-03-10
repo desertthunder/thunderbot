@@ -17,7 +17,15 @@ This document outlines the engineering specification for a **Stateful AI Agent**
 
 Part 1: Milestones 1-6
 
-Part 2: Milestone 7
+Part 2: Milestones 7 & 8
+
+Part 3: Milestone 9
+
+Part 4: Milestones 10 & 11
+
+Part 5: Milestone 12
+
+Part 6: Milestone 13
 
 ## Milestone 1: The Foundation, Ingestion Layer, and CLI
 
@@ -293,7 +301,7 @@ Part 2: Milestone 7
 
 ## Milestone 6: The Control Deck (Web UI)
 
-**Goal**: A lightweight, fast dashboard to monitor the bot's "brain" and state, using modern HTMX + Pico.
+**Goal**: A lightweight, fast dashboard to monitor the bot's "brain" and state, using Alpine.js, HTMX + Pico (written in maud macros in rust)
 
 **Definition of Done**:
 
@@ -306,9 +314,9 @@ Part 2: Milestone 7
 
 1. **HTMX + Pico Setup**
     - **Requirements**:
-        - Add `axum` or `actix-web` for HTTP routing (with feature flags for different runtimes).
+        - Add `axum` for HTTP routing (with feature flags for different runtimes).
         - Serve Pico CSS from CDN or embedded assets.
-        - Implement HTML templating using `askama` or `maud` crate.
+        - Implement HTML templating using `maud` crate.
         - Create the main layout: Sidebar (Status, Logs, Chat, Config) + Content Area.
         - Set up HTMX for checking server health/status every 5s (`hx-trigger="every 5s"`).
 
@@ -425,7 +433,69 @@ Part 2: Milestone 7
     - Save pending state to database
     - Log shutdown progress
 
-## Milestone 9: Dashboard Enhancements
+## Milestone 9: Multi-Model Support
+
+**Goal**: Make the cognitive engine provider-agnostic, supporting Kimi K2.5 as the cloud primary and Gemma 3 via Ollama for local/offline inference.
+
+**Definition of Done**:
+
+1. A `ModelProvider` trait abstracts chat completion across backends.
+2. Kimi K2.5 is callable via Moonshot's OpenAI-compatible API.
+3. Gemma 3 4B runs locally via Ollama with the same trait interface.
+4. Provider is selectable via configuration without code changes.
+5. Existing GLM-5 client is refactored behind the trait (backwards compatible).
+6. CLI commands work with any configured provider.
+
+### Tasks
+
+1. **ModelProvider Trait**
+    - **Requirements**:
+        - Define `ModelProvider` async trait with `chat_completion(&self, messages, config) -> Result<Response>`.
+        - Shared types: `ChatMessage` (role, content), `CompletionConfig` (temperature, max_tokens, thinking).
+        - Shared response type: `CompletionResponse` (text, usage, model, finish_reason).
+        - Provider-level error types mapping to common errors (rate limit, auth, network, context overflow).
+        - Factory function to instantiate provider from configuration enum.
+
+2. **Kimi K2.5 Provider**
+    - **Requirements**:
+        - Implement `ModelProvider` for `KimiProvider` targeting `https://api.moonshot.ai/v1/chat/completions`.
+        - Model ID: `kimi-k2.5` (MoE, 1T total params, 32B active per token).
+        - 262K token context window support.
+        - Configure with `TNBOT_AI__API_KEY` and `TNBOT_AI__BASE_URL` environment variables.
+        - Support Thinking mode via Kimi's extended parameters.
+        - Handle Moonshot-specific rate limits and error codes.
+        - Pricing-aware logging: $0.60/M input, $3.00/M output tokens.
+
+3. **Gemma 3 Provider (Local via Ollama)**
+    - **Requirements**:
+        - Implement `ModelProvider` for `OllamaProvider` targeting `http://localhost:11434/v1/chat/completions`.
+        - Default model: `gemma3:4b` (4B dense params, ~2.5 GB quantized Q4_K_M, 4 GB RAM).
+        - 32K token context window.
+        - Configurable model tag via `TNBOT_AI__OLLAMA_MODEL` for swapping to `mistral:7b` or others.
+        - Health check on startup: verify Ollama is running and model is pulled.
+        - Graceful fallback: if Ollama is unreachable, log warning and disable local inference.
+
+4. **GLM-5 Refactor**
+    - **Requirements**:
+        - Refactor existing `AiClient` to implement `ModelProvider` trait.
+        - Preserve existing Z.ai API endpoint and authentication logic.
+        - No behavioral changes to existing GLM-5 usage.
+
+5. **Provider Configuration**
+    - **Requirements**:
+        - Add `[ai]` section to config: `provider` (kimi, ollama, glm5), `model`, `base_url`, `api_key`, `temperature`, `max_tokens`.
+        - Support provider override per CLI command via `--provider` flag.
+        - Validate provider configuration at startup (check API keys, connectivity).
+        - Log active provider and model on startup.
+
+6. **CLI: Model Commands**
+    - **Requirements**:
+        - `ai providers` — list configured providers and their status (reachable/unreachable).
+        - `ai prompt <TEXT> --provider <PROVIDER>` — send prompt to a specific provider.
+        - `ai benchmark <TEXT>` — run same prompt across all providers, compare latency and output.
+        - Update existing `ai` subcommands to respect `--provider` flag.
+
+## Milestone 10: Dashboard Enhancements
 
 **Goal**: Make the dashboard more powerful for day-to-day bot management.
 
@@ -481,7 +551,7 @@ Part 2: Milestone 7
     - Filter by action type
     - Paginated history
 
-## Milestone 10: Operational Controls
+## Milestone 11: Operational Controls
 
 **Goal**: Give operators fine-grained control over bot behavior and visibility into limits.
 
@@ -548,7 +618,71 @@ Part 2: Milestone 7
     - Retry individual events or bulk retry
     - Purge old failures
 
-## Milestone 12: Deployment/Self-Hosting
+## Milestone 12: Voice Interface
+
+**Goal**: Add speech-to-text and text-to-speech capabilities using whisper.cpp and Piper, enabling voice interaction with the bot.
+
+**Definition of Done**:
+
+1. whisper.cpp transcribes audio input to text via embedded Rust bindings or HTTP sidecar.
+2. Piper synthesizes bot responses into natural speech audio.
+3. Audio pipeline integrates with the existing AI action pipeline (STT → AI → TTS).
+4. Voice models are configurable and downloadable via CLI.
+5. Dashboard exposes voice controls and playback.
+
+### Tasks
+
+1. **whisper.cpp Integration (Speech-to-Text)**
+    - **Requirements**:
+        - Add `whisper-rs` crate with Metal/CUDA feature flags for hardware acceleration.
+        - Default model: `ggml-small` (244M params, 466 MB disk, ~1 GB RAM, 4% WER).
+        - Support model tiers: `tiny` (fastest, 8% WER), `base`, `small` (recommended), `medium`, `large-v3-turbo` (best accuracy).
+        - Accept audio formats: WAV, MP3, FLAC, OGG, AAC, M4A.
+        - Implement `SttProvider` trait with `transcribe(&self, audio_data) -> Result<String>`.
+        - Fallback: HTTP sidecar mode targeting `POST /v1/audio/transcriptions` (OpenAI-compatible whisper-server).
+        - Performance target on Apple Silicon: ≤0.3× real-time factor with `small` model (3s processing for 10s audio).
+
+2. **Piper Integration (Text-to-Speech)**
+    - **Requirements**:
+        - Add `piper-rs` crate for embedded VITS/ONNX inference.
+        - Default voice: `en_US-ryan-high` (male, clear, assistant-appropriate, 22.05 kHz, ~60 MB).
+        - Support quality tiers: `x_low` (16 kHz, ~15 MB), `low`, `medium`, `high` (recommended).
+        - Alternative voices: `en_US-amy-medium` (female), `en_US-lessac-high` (expressive), `en_GB-alan-medium` (British).
+        - Implement `TtsProvider` trait with `synthesize(&self, text) -> Result<AudioBuffer>`.
+        - Fallback: HTTP sidecar mode targeting `POST /v1/audio/speech` (OpenAI-compatible TTS-API-Server).
+        - Sentence-boundary streaming for low-latency playback on longer responses.
+
+3. **Audio Pipeline**
+    - **Requirements**:
+        - Wire STT output into the existing `ActionService` as a text input source.
+        - Wire AI response text into TTS for audio output generation.
+        - Full flow: Microphone → `whisper-rs` → Text → AI Pipeline → Response Text → `piper-rs` → Speaker.
+        - Support audio-only mode (voice in, voice out) and hybrid mode (voice in, text out).
+        - Configurable pipeline via `[voice]` config section: `stt_enabled`, `tts_enabled`, `stt_model`, `tts_voice`.
+
+4. **Model Management**
+    - **Requirements**:
+        - `voice models list` — show available whisper and piper models with size and quality info.
+        - `voice models pull <MODEL>` — download model to local cache directory.
+        - `voice models remove <MODEL>` — delete cached model.
+        - Store models in `~/.thunderbot/models/` with separate `whisper/` and `piper/` subdirectories.
+        - Verify model checksums after download.
+
+5. **CLI: Voice Commands**
+    - **Requirements**:
+        - `voice transcribe <FILE>` — transcribe an audio file to text.
+        - `voice speak <TEXT>` — synthesize text to audio and play or save to file.
+        - `voice chat` — interactive voice conversation loop (record → transcribe → AI → speak).
+        - `voice status` — show loaded models, hardware acceleration status, and latency benchmarks.
+
+6. **Dashboard Voice Controls**
+    - **Requirements**:
+        - Audio player widget for listening to TTS output of bot responses.
+        - Voice activity indicator showing STT processing state.
+        - Model selection dropdown for switching whisper/piper models.
+        - Latency display for STT and TTS processing times.
+
+## Milestone 13: Deployment/Self-Hosting
 
 **Goal**: Make Thunderbot easy to run locally or in containers for personal deployments.
 
@@ -598,7 +732,3 @@ Part 2: Milestone 7
 
 - Whitelist for who can communicate with bots (mutuals?)
 - Administrator accounts
-- Support other models
-    1. [Gemma via Ollama](https://ollama.com/library/gemma3) (`gemma3:latest`)
-    2. [Whisper.cpp](https://github.com/ggml-org/whisper.cpp) to talk to it
-        - Small or Medium
