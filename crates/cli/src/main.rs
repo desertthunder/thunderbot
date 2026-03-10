@@ -4,7 +4,7 @@ use owo_colors::OwoColorize;
 mod cli;
 mod commands;
 
-use cli::{Cli, Commands, ConfigAction, JetstreamAction, parse_log_level};
+use cli::{Cli, Commands, ConfigAction, DbAction, JetstreamAction, parse_log_level};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +37,13 @@ async fn main() -> anyhow::Result<()> {
             JetstreamAction::Replay { cursor, filter_did } => {
                 commands::jetstream::replay(cursor, filter_did, settings.bot.did.clone()).await?
             }
+        },
+        Commands::Db { action } => match action {
+            DbAction::Migrate => commands::db::migrate(&settings.database.path).await?,
+            DbAction::Stats => commands::db::stats(&settings.database.path, cli.json).await?,
+            DbAction::Threads => commands::db::threads(&settings.database.path, 20, cli.json).await?,
+            DbAction::Thread { root_uri } => commands::db::thread(&settings.database.path, &root_uri, cli.json).await?,
+            DbAction::Identities => commands::db::identities(&settings.database.path, cli.json).await?,
         },
         Commands::Status => println!(
             "{}\n  Status: {}",

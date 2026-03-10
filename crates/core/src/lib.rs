@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod jetstream;
+pub mod processor;
 pub mod services;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

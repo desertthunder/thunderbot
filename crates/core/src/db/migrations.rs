@@ -98,11 +98,17 @@ pub async fn check_migrations(db: &Database) -> Result<bool, BotError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
     async fn create_test_db() -> (Database, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("test.db");
+        // Use unique database names to avoid conflicts between parallel tests
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = temp_dir.path().join(format!("test_{}.db", timestamp));
         let db = libsql::Builder::new_local(db_path.to_str().unwrap())
             .build()
             .await
