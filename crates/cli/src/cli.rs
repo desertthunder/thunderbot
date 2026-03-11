@@ -100,7 +100,7 @@ pub enum JetstreamAction {
 
 #[derive(Subcommand, Debug)]
 pub enum BskyAction {
-    #[command(about = "Authenticate with Bluesky")]
+    #[command(about = "Bind/authenticate the bot account with Bluesky")]
     Login,
 
     #[command(about = "Display current session info")]

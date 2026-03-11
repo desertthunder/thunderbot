@@ -11,6 +11,24 @@ pub fn show_config(settings: &Settings, json: bool) -> anyhow::Result<()> {
         println!("  Bluesky Handle: {}", settings.bluesky.handle.cyan());
         println!("  PDS Host: {}", settings.bluesky.pds_host.cyan());
         println!(
+            "  Access Allowed DIDs: {}",
+            if settings.access.allowed_dids.is_empty() {
+                "all".to_string()
+            } else {
+                settings.access.allowed_dids.join(", ")
+            }
+            .cyan()
+        );
+        println!(
+            "  Access Allowed Handles: {}",
+            if settings.access.allowed_handles.is_empty() {
+                "none".to_string()
+            } else {
+                settings.access.allowed_handles.join(", ")
+            }
+            .cyan()
+        );
+        println!(
             "  Database Path: {}",
             settings.database.path.display().to_string().cyan()
         );

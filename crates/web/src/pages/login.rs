@@ -121,7 +121,7 @@ fn login_view(context: &LoginTemplateContext<'_>) -> Markup {
                                 strong { "Thunderbot Control Deck" }
                             }
                             p class="muted" {
-                                "Sign in to access dashboard, chat inspector, and manual controls."
+                                "Operator sign in for dashboard, chat inspector, and manual controls."
                             }
                         }
 

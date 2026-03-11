@@ -86,7 +86,7 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
                     }))?
                 );
             } else {
-                println!("{}", "Login successful!".green().bold());
+                println!("{}", "Bot account binding successful!".green().bold());
                 println!("  {}: {}", "DID".cyan(), session.did);
                 println!("  {}: {}", "Handle".cyan(), session.handle);
                 println!("  {}: {}", "Session Cache".cyan(), session_path.display());
@@ -107,7 +107,7 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
                     }))?
                 );
             } else {
-                eprintln!("{} {}", "Login failed:".red(), e);
+                eprintln!("{} {}", "Bot account binding failed:".red(), e);
             }
         }
     }

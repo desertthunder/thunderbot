@@ -11,6 +11,7 @@ use crate::bsky::session::Session;
 use crate::error::{BotError, Result, XrpcErrorResponse};
 use rand::RngExt;
 use reqwest::StatusCode;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -297,6 +298,38 @@ impl BskyClient {
         ))
     }
 
+    /// Create or update a record with explicit rkey.
+    ///
+    /// Calls `com.atproto.repo.putRecord`.
+    pub async fn put_record(
+        &self, repo: &str, collection: &str, rkey: &str, record: serde_json::Value,
+    ) -> Result<CreateRecordResponse> {
+        let session = self.ensure_valid_session().await?;
+        let url = format!("{}/xrpc/com.atproto.repo.putRecord", self.pds_host);
+        let request = PutRecordRequest {
+            repo: repo.to_string(),
+            collection: collection.to_string(),
+            rkey: rkey.to_string(),
+            record,
+        };
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", session.auth_header())
+            .json(&request)
+            .send()
+            .await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let error_response = response.json::<XrpcErrorResponse>().await.ok();
+            return Err(BotError::from_xrpc_status(status, error_response));
+        }
+
+        response.json().await.map_err(|e| e.into())
+    }
+
     /// Get a record by URI
     ///
     /// Calls `com.atproto.repo.getRecord`.
@@ -413,6 +446,61 @@ impl BskyClient {
 
         response.json().await.map_err(|e| e.into())
     }
+
+    /// Update the bot profile description by applying a leading status marker.
+    ///
+    /// The existing description content is preserved and only the leading status
+    /// marker is replaced.
+    pub async fn update_profile_status_prefix(&self, status_emoji: &str) -> Result<()> {
+        let session = self.ensure_valid_session().await?;
+        let repo_did = session.did;
+
+        let mut profile_record = match self.get_record(&repo_did, "app.bsky.actor.profile", "self").await {
+            Ok(record) => record.value,
+            Err(BotError::XrpcInvalidRequest(_)) => json!({ "$type": "app.bsky.actor.profile" }),
+            Err(e) => return Err(e),
+        };
+
+        if !profile_record.is_object() {
+            profile_record = json!({ "$type": "app.bsky.actor.profile" });
+        }
+        if profile_record.get("$type").is_none()
+            && let Some(obj) = profile_record.as_object_mut()
+        {
+            obj.insert("$type".to_string(), Value::String("app.bsky.actor.profile".to_string()));
+        }
+
+        let existing_description = profile_record
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let updated_description = apply_status_prefix(existing_description, status_emoji);
+
+        if let Some(obj) = profile_record.as_object_mut() {
+            obj.insert("description".to_string(), Value::String(updated_description));
+        }
+
+        self.put_record(&repo_did, "app.bsky.actor.profile", "self", profile_record)
+            .await?;
+        Ok(())
+    }
+}
+
+fn apply_status_prefix(existing: &str, status_emoji: &str) -> String {
+    let trimmed = existing.trim();
+    let without_prefix = if let Some(rest) = trimmed.strip_prefix("🟢") {
+        rest.trim_start()
+    } else if let Some(rest) = trimmed.strip_prefix("🔴") {
+        rest.trim_start()
+    } else {
+        trimmed
+    };
+
+    if without_prefix.is_empty() {
+        status_emoji.to_string()
+    } else {
+        format!("{} {}", status_emoji, without_prefix)
+    }
 }
 
 async fn sleep_with_jitter_backoff(attempt: usize) {
@@ -438,6 +526,24 @@ mod tests {
     fn test_bsky_client_with_credentials() {
         let client = BskyClient::with_credentials("https://bsky.social", "test.bsky.social", "app-password-123");
         assert_eq!(client.pds_host, "https://bsky.social");
+    }
+
+    #[test]
+    fn test_apply_status_prefix_prepends_on_plain_description() {
+        let result = apply_status_prefix("bot account", "🟢");
+        assert_eq!(result, "🟢 bot account");
+    }
+
+    #[test]
+    fn test_apply_status_prefix_replaces_existing_marker() {
+        let result = apply_status_prefix("🔴 currently offline", "🟢");
+        assert_eq!(result, "🟢 currently offline");
+    }
+
+    #[test]
+    fn test_apply_status_prefix_handles_empty_description() {
+        let result = apply_status_prefix("", "🔴");
+        assert_eq!(result, "🔴");
     }
 
     #[tokio::test]

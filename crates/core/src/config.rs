@@ -50,6 +50,13 @@ pub fn validate_settings(settings: &Settings) -> Result<()> {
         errors.push("bot.did must start with `did:` when provided");
     }
 
+    for did in &settings.access.allowed_dids {
+        if !did.trim().is_empty() && !did.starts_with("did:") {
+            errors.push("access.allowed_dids values must start with `did:`");
+            break;
+        }
+    }
+
     let pds_host = settings.bluesky.pds_host.trim();
     if !(pds_host.starts_with("https://") || pds_host.starts_with("http://")) {
         errors.push("bluesky.pds_host must start with http:// or https://");
@@ -90,6 +97,10 @@ did = "did:plc:test123"
 [bluesky]
 handle = "test.bsky.social"
 pds_host = "https://test.bsky.social"
+
+[access]
+allowed_dids = ["did:plc:allowed"]
+allowed_handles = ["alice.bsky.social"]
 "#,
         )
         .unwrap();
@@ -99,6 +110,8 @@ pds_host = "https://test.bsky.social"
         assert_eq!(settings.bot.did, "did:plc:test123");
         assert_eq!(settings.bluesky.handle, "test.bsky.social");
         assert_eq!(settings.bluesky.pds_host, "https://test.bsky.social");
+        assert_eq!(settings.access.allowed_dids, vec!["did:plc:allowed"]);
+        assert_eq!(settings.access.allowed_handles, vec!["alice.bsky.social"]);
     }
 
     #[test]
@@ -120,6 +133,15 @@ pds_host = "https://test.bsky.social"
     fn test_validate_settings_rejects_invalid_pds() {
         let mut settings = Settings::default();
         settings.bluesky.pds_host = "ftp://example.org".to_string();
+
+        let result = validate_settings(&settings);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_settings_rejects_invalid_allowed_did() {
+        let mut settings = Settings::default();
+        settings.access.allowed_dids = vec!["alice.bsky.social".to_string()];
 
         let result = validate_settings(&settings);
         assert!(result.is_err());

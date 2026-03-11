@@ -18,6 +18,8 @@ pub struct Settings {
     #[serde(default)]
     pub bluesky: BlueskyConfig,
     #[serde(default)]
+    pub access: AccessConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -53,6 +55,23 @@ pub struct BlueskyConfig {
 
 fn default_pds_host() -> String {
     "https://bsky.social".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessConfig {
+    #[serde(default)]
+    pub allowed_dids: Vec<String>,
+    #[serde(default)]
+    pub allowed_handles: Vec<String>,
+    #[serde(default)]
+    pub unauthorized_policy: UnauthorizedPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UnauthorizedPolicy {
+    #[default]
+    StoreNoReply,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +201,16 @@ impl Default for DatabaseConfig {
     }
 }
 
+impl Default for AccessConfig {
+    fn default() -> Self {
+        Self {
+            allowed_dids: Vec::new(),
+            allowed_handles: Vec::new(),
+            unauthorized_policy: UnauthorizedPolicy::StoreNoReply,
+        }
+    }
+}
+
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self { level: default_log_level(), format: LogFormat::default() }
@@ -209,6 +238,9 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.bot.name, "ThunderBot");
         assert_eq!(settings.bluesky.pds_host, "https://bsky.social");
+        assert!(settings.access.allowed_dids.is_empty());
+        assert!(settings.access.allowed_handles.is_empty());
+        assert_eq!(settings.access.unauthorized_policy, UnauthorizedPolicy::StoreNoReply);
         assert_eq!(settings.database.path, PathBuf::from("./data/thunderbot.db"));
         assert_eq!(settings.logging.level, "info");
     }
@@ -248,6 +280,14 @@ mod tests {
     fn test_database_config_default() {
         let db = DatabaseConfig::default();
         assert_eq!(db.path, PathBuf::from("./data/thunderbot.db"));
+    }
+
+    #[test]
+    fn test_access_config_default() {
+        let access = AccessConfig::default();
+        assert!(access.allowed_dids.is_empty());
+        assert!(access.allowed_handles.is_empty());
+        assert_eq!(access.unauthorized_policy, UnauthorizedPolicy::StoreNoReply);
     }
 
     #[test]

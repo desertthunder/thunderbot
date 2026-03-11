@@ -39,12 +39,16 @@ Configuration is loaded from (in order of precedence):
 Create a `.env` file in your working directory:
 
 ```bash
-# Required: Your Bluesky credentials
-BSKY_HANDLE=yourhandle.bsky.social
-BSKY_APP_PASSWORD=your-app-password-here
+# Required: Bot account binding (Bluesky credentials used for posting)
+TNBOT_BLUESKY__HANDLE=yourhandle.bsky.social
+TNBOT_BLUESKY__APP_PASSWORD=your-app-password-here
 
 # Required: Your bot's DID (find it at https://plc.directory/yourhandle.bsky.social)
-TNBOT_BOT_DID=did:plc:xxxxx
+TNBOT_BOT__DID=did:plc:xxxxx
+
+# Optional: Operator login for the web control deck
+# TNBOT_WEB__USERNAME=admin
+# TNBOT_WEB__PASSWORD=change-me
 
 # Optional: GLM-5 API key for AI responses
 GLM_5_API_KEY=your-glm5-api-key
@@ -62,6 +66,11 @@ did = "did:plc:xxxxx"
 handle = "yourhandle.bsky.social"
 app_password = "your-app-password-here"
 pds_host = "https://bsky.social"
+
+[access]
+allowed_dids = []
+allowed_handles = []
+unauthorized_policy = "store_no_reply"
 
 [database]
 path = "./data/thunderbot.db"
@@ -252,7 +261,9 @@ The `serve` command starts a web dashboard on `127.0.0.1:3000` (configurable via
 - **Logs** -- search and inspect failed events
 - **Config** -- view resolved configuration
 
-Authentication is session-based. If no password is configured, an ephemeral one is printed to the console on startup.
+Authentication is session-based and intended for operators. Configure `TNBOT_WEB__USERNAME` / `TNBOT_WEB__PASSWORD` for persistent operator login credentials. If no password is configured, an ephemeral one is printed to the console on startup.
+
+When the daemon starts, Thunderbot updates its Bluesky profile description with a leading `🟢`. On graceful shutdown (including Ctrl+C), it flips that marker to `🔴`.
 
 ## Development
 
@@ -275,9 +286,9 @@ cargo run -p tnbot-cli -- -c /path/to/config.toml serve
 docker build -t thunderbot .
 
 # Run with environment variables
-docker run -e BSKY_HANDLE=yourhandle.bsky.social \
-           -e BSKY_APP_PASSWORD=xxx \
-           -e TNBOT_BOT_DID=did:plc:xxx \
+docker run -e TNBOT_BLUESKY__HANDLE=yourhandle.bsky.social \
+           -e TNBOT_BLUESKY__APP_PASSWORD=xxx \
+           -e TNBOT_BOT__DID=did:plc:xxx \
            --rm thunderbot serve
 ```
 

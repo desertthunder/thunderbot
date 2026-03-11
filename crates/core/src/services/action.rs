@@ -3,13 +3,15 @@
 //! Orchestrates the full flow:
 //! 1. Loop prevention check (skip if author_did == bot_did)
 //! 2. Store incoming mention
-//! 3. Build context from thread history
-//! 4. Generate AI response via GLM-5
-//! 5. Check for silent mode (<SILENT_THOUGHT>)
-//! 6. Post reply with proper threading (Root/Parent refs)
-//! 7. Store bot's reply in database
-//! 8. Handle rate limits with exponential backoff
+//! 3. Apply access policy (optionally store-without-reply for unauthorized authors)
+//! 4. Build context from thread history
+//! 5. Generate AI response via GLM-5
+//! 6. Check for silent mode (<SILENT_THOUGHT>)
+//! 7. Post reply with proper threading (Root/Parent refs)
+//! 8. Store bot's reply in database
+//! 9. Handle rate limits with exponential backoff
 
+use crate::UnauthorizedPolicy;
 use crate::ai::client::Glm5Client;
 use crate::ai::prompt::PromptBuilder;
 use crate::ai::types::ChatCompletionRequest;
@@ -26,7 +28,7 @@ use crate::services::thread::{
     extract_created_at, extract_parent_uri, extract_root_cid, extract_root_uri, extract_text,
 };
 use rand::RngExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -40,6 +42,38 @@ pub struct ActionPipeline<R: ConversationRepository + IdentityRepository + Memor
     dry_run: bool,
     embedding_sender: Option<mpsc::Sender<EmbeddingPipelineMessage>>,
     memory_retriever: Option<MemoryRetriever<R>>,
+    access_policy: AccessPolicy,
+}
+
+/// Immutable access policy for author-level interaction controls.
+#[derive(Debug, Clone)]
+pub struct AccessPolicy {
+    allowed_dids: HashSet<String>,
+    unauthorized_policy: UnauthorizedPolicy,
+}
+
+impl AccessPolicy {
+    pub fn new(allowed_dids: HashSet<String>, unauthorized_policy: UnauthorizedPolicy) -> Self {
+        Self { allowed_dids, unauthorized_policy }
+    }
+
+    pub fn allows_author(&self, author_did: &str) -> bool {
+        self.allowed_dids.is_empty() || self.allowed_dids.contains(author_did)
+    }
+
+    pub fn unauthorized_policy(&self) -> UnauthorizedPolicy {
+        self.unauthorized_policy
+    }
+
+    pub fn allowed_did_count(&self) -> usize {
+        self.allowed_dids.len()
+    }
+}
+
+impl Default for AccessPolicy {
+    fn default() -> Self {
+        Self::new(HashSet::new(), UnauthorizedPolicy::StoreNoReply)
+    }
 }
 
 /// Result of processing a mention
@@ -51,6 +85,7 @@ pub struct ActionResult {
     pub posted_reply_uri: Option<String>,
     pub silent: bool,
     pub loop_prevented: bool,
+    pub blocked_by_access_policy: bool,
     pub error: Option<String>,
 }
 
@@ -68,6 +103,7 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
             dry_run: false,
             embedding_sender: None,
             memory_retriever: None,
+            access_policy: AccessPolicy::default(),
         }
     }
 
@@ -86,6 +122,12 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
     /// Set memory retriever for hybrid RAG context injection.
     pub fn with_memory_retriever(mut self, retriever: MemoryRetriever<R>) -> Self {
         self.memory_retriever = Some(retriever);
+        self
+    }
+
+    /// Set author access policy.
+    pub fn with_access_policy(mut self, policy: AccessPolicy) -> Self {
+        self.access_policy = policy;
         self
     }
 
@@ -126,6 +168,7 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
                 posted_reply_uri: None,
                 silent: false,
                 loop_prevented: true,
+                blocked_by_access_policy: false,
                 error: None,
             });
         }
@@ -160,6 +203,25 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
                     tracing::warn!(conversation_id = conversation.id, error = %e, "Failed to queue embedding job")
                 }
             }
+        }
+
+        if !self.access_policy.allows_author(&author_did) {
+            tracing::info!(
+                post_uri = %post_uri,
+                author_did = %author_did,
+                unauthorized_policy = ?self.access_policy.unauthorized_policy(),
+                "Author blocked by access policy; storing mention without generating a reply"
+            );
+            return Ok(ActionResult {
+                post_uri,
+                root_uri,
+                response_text: None,
+                posted_reply_uri: None,
+                silent: false,
+                loop_prevented: false,
+                blocked_by_access_policy: true,
+                error: None,
+            });
         }
 
         let thread = self.repo.get_thread_by_root(&root_uri).await?;
@@ -243,6 +305,7 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
                 posted_reply_uri: None,
                 silent: true,
                 loop_prevented: false,
+                blocked_by_access_policy: false,
                 error: None,
             });
         }
@@ -328,6 +391,7 @@ impl<R: ConversationRepository + IdentityRepository + MemoryRepository + Clone +
             posted_reply_uri: reply_record.map(|r| r.uri),
             silent: false,
             loop_prevented: false,
+            blocked_by_access_policy: false,
             error: None,
         })
     }
@@ -416,6 +480,59 @@ fn calculate_backoff(attempt: usize, initial_ms: u64, max_ms: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{Glm5Config, PromptBuilder};
+    use crate::bsky::BskyClient;
+    use crate::db::migrations;
+    use crate::db::repository::{ConversationRepository, LibsqlRepository};
+    use crate::jetstream::EventFilter;
+    use crate::jetstream::types::{CommitData, CommitOperation, JetstreamEvent};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::TempDir;
+
+    async fn setup_test_repo() -> (LibsqlRepository, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let db_path = temp_dir.path().join(format!("test_{}.db", timestamp));
+
+        let db = libsql::Builder::new_local(db_path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        migrations::run_migrations(&db).await.unwrap();
+        let conn = db.connect().unwrap();
+        (LibsqlRepository::new(conn), temp_dir)
+    }
+
+    fn create_mention_event(author_did: &str, rkey: &str, text: &str, bot_did: &str) -> FilteredEvent {
+        let record = serde_json::json!({
+            "text": text,
+            "facets": [
+                {
+                    "index": { "byteStart": 0, "byteEnd": 4 },
+                    "features": [
+                        { "$type": "app.bsky.richtext.facet#mention", "did": bot_did }
+                    ]
+                }
+            ],
+            "createdAt": "2024-01-01T00:00:00.000Z"
+        });
+
+        let event = JetstreamEvent::Commit {
+            did: author_did.to_string(),
+            time_us: 1234567890,
+            commit: CommitData {
+                rev: "test".to_string(),
+                operation: CommitOperation::Create,
+                collection: "app.bsky.feed.post".to_string(),
+                rkey: rkey.to_string(),
+                record: Some(record),
+                cid: Some("bafyrei...".to_string()),
+            },
+        };
+
+        let filter = EventFilter::new(bot_did);
+        filter.filter(event).unwrap()
+    }
 
     #[test]
     fn test_backoff_calculation() {
@@ -438,12 +555,67 @@ mod tests {
             posted_reply_uri: Some("at://did:plc:bot/app.bsky.feed.post/reply".to_string()),
             silent: false,
             loop_prevented: false,
+            blocked_by_access_policy: false,
             error: None,
         };
 
         assert!(!result.silent);
         assert!(!result.loop_prevented);
+        assert!(!result.blocked_by_access_policy);
         assert!(result.response_text.is_some());
         assert!(result.posted_reply_uri.is_some());
+    }
+
+    #[test]
+    fn test_access_policy_allows_all_when_empty() {
+        let policy = AccessPolicy::default();
+        assert!(policy.allows_author("did:plc:anyone"));
+    }
+
+    #[test]
+    fn test_access_policy_allows_configured_did() {
+        let allowed = HashSet::from([String::from("did:plc:allowed")]);
+        let policy = AccessPolicy::new(allowed, UnauthorizedPolicy::StoreNoReply);
+        assert!(policy.allows_author("did:plc:allowed"));
+        assert!(!policy.allows_author("did:plc:blocked"));
+        assert_eq!(policy.allowed_did_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_access_policy_store_no_reply_blocks_generation_but_stores_mention() {
+        let (repo, _temp_dir) = setup_test_repo().await;
+        let ai_client =
+            crate::ai::Glm5Client::with_config(Glm5Config { api_key: "test-key".to_string(), ..Default::default() });
+        let bsky_client = BskyClient::new("https://bsky.social");
+        let prompt_builder = PromptBuilder::new("test constitution");
+
+        let policy = AccessPolicy::new(
+            HashSet::from([String::from("did:plc:allowed")]),
+            UnauthorizedPolicy::StoreNoReply,
+        );
+
+        let pipeline = ActionPipeline::new(
+            ai_client,
+            bsky_client,
+            repo.clone(),
+            prompt_builder,
+            "did:plc:bot123".to_string(),
+        )
+        .with_access_policy(policy);
+
+        let event = create_mention_event("did:plc:blocked", "r1", "@bot hello", "did:plc:bot123");
+        let result = pipeline.process_mention(&event).await.unwrap();
+
+        assert!(result.blocked_by_access_policy);
+        assert!(!result.loop_prevented);
+        assert!(!result.silent);
+        assert!(result.response_text.is_none());
+        assert!(result.posted_reply_uri.is_none());
+
+        let stored = repo
+            .get_by_post_uri("at://did:plc:blocked/app.bsky.feed.post/r1")
+            .await
+            .unwrap();
+        assert!(stored.is_some(), "Mention should still be stored for audit/context");
     }
 }

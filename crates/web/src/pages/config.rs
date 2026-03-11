@@ -4,6 +4,7 @@ use axum::extract::State;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::{Markup, html};
+use tnbot_core::UnauthorizedPolicy;
 
 #[derive(Debug)]
 struct ConfigSnapshot {
@@ -22,6 +23,9 @@ struct ConfigSnapshot {
     memory_ttl_days: u32,
     memory_consolidation_ttl_days: u32,
     memory_dedup_threshold: f64,
+    access_allowed_dids: String,
+    access_allowed_handles: String,
+    access_unauthorized_policy: String,
     web_bind_addr: String,
     web_username: String,
     web_password_mode: String,
@@ -75,6 +79,19 @@ fn build_config_snapshot(state: &AppState) -> ConfigSnapshot {
         memory_ttl_days: settings.memory.ttl_days,
         memory_consolidation_ttl_days: settings.memory.consolidation_ttl_days,
         memory_dedup_threshold: settings.memory.dedup_threshold,
+        access_allowed_dids: if settings.access.allowed_dids.is_empty() {
+            "all authors (no DID whitelist)".to_string()
+        } else {
+            settings.access.allowed_dids.join(", ")
+        },
+        access_allowed_handles: if settings.access.allowed_handles.is_empty() {
+            "none".to_string()
+        } else {
+            settings.access.allowed_handles.join(", ")
+        },
+        access_unauthorized_policy: match settings.access.unauthorized_policy {
+            UnauthorizedPolicy::StoreNoReply => "store_no_reply".to_string(),
+        },
         web_bind_addr: state.web.bind_addr.to_string(),
         web_username: state.web.username.clone(),
         web_password_mode: if state.web.generated_password {
@@ -131,7 +148,13 @@ fn config_view(context: &ConfigTemplateContext<'_>) -> Markup {
                 ),
             ])) }
 
-            article { (partials::config_card("Web Control Deck", vec![
+            article { (partials::config_card("Access Policy", vec![
+                ("Allowed DIDs".to_string(), config.access_allowed_dids.clone(), true),
+                ("Allowed Handles".to_string(), config.access_allowed_handles.clone(), false),
+                ("Unauthorized Behavior".to_string(), config.access_unauthorized_policy.clone(), false),
+            ])) }
+
+            article { (partials::config_card("Web Operator Access", vec![
                 ("Bind Address".to_string(), config.web_bind_addr.clone(), true),
                 ("Username".to_string(), config.web_username.clone(), false),
                 ("Password Mode".to_string(), config.web_password_mode.clone(), false),

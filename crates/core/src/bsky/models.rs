@@ -94,6 +94,15 @@ pub struct CreateRecordRequest {
     pub record: serde_json::Value,
 }
 
+/// Put record request (create/update with explicit rkey)
+#[derive(Debug, Clone, Serialize)]
+pub struct PutRecordRequest {
+    pub repo: String,
+    pub collection: String,
+    pub rkey: String,
+    pub record: serde_json::Value,
+}
+
 /// Create record response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRecordResponse {

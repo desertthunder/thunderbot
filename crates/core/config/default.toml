@@ -7,6 +7,11 @@ handle = ""
 app_password = ""
 pds_host = "https://bsky.social"
 
+[access]
+allowed_dids = []
+allowed_handles = []
+unauthorized_policy = "store_no_reply"
+
 [database]
 path = "./data/thunderbot.db"
 

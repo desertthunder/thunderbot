@@ -11,7 +11,7 @@ pub mod identity;
 pub mod memory;
 pub mod thread;
 
-pub use action::{ActionPipeline, ActionResult};
+pub use action::{AccessPolicy, ActionPipeline, ActionResult};
 pub use identity::{IDENTITY_TTL_HOURS, IdentityResolver, SharedIdentityResolver, create_shared_resolver};
 pub use memory::{MemoryRetriever, MemoryRetrieverConfig};
 pub use thread::{ConversationRole, ThreadContext, ThreadReconstructor};
