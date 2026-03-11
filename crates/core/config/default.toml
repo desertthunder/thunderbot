@@ -13,7 +13,6 @@ allowed_handles = []
 unauthorized_policy = "store_no_reply"
 
 [database]
-path = "./data/thunderbot.db"
 
 [logging]
 level = "info"

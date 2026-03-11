@@ -1,3 +1,4 @@
+use anyhow::Context;
 use owo_colors::OwoColorize;
 use std::path::PathBuf;
 use tnbot_core::Settings;
@@ -26,20 +27,29 @@ fn ensure_credentials(settings: &Settings) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn build_authenticated_client(settings: &Settings) -> anyhow::Result<(BskyClient, PathBuf)> {
+async fn resolve_pds_host(settings: &Settings) -> anyhow::Result<String> {
+    let handle = settings.bluesky.handle.trim();
+    if handle.is_empty() {
+        let configured = settings.bluesky.pds_host.trim();
+        return Ok(if configured.is_empty() { "https://bsky.social".to_string() } else { configured.to_string() });
+    }
+
+    BskyClient::determine_pds_host(handle, &settings.bluesky.pds_host)
+        .await
+        .with_context(|| format!("Failed to resolve PDS host for `{}`", handle))
+}
+
+async fn build_authenticated_client(settings: &Settings) -> anyhow::Result<(BskyClient, PathBuf, String)> {
     ensure_credentials(settings)?;
-    let client = BskyClient::with_credentials(
-        &settings.bluesky.pds_host,
-        &settings.bluesky.handle,
-        &settings.bluesky.app_password,
-    );
+    let pds_host = resolve_pds_host(settings).await?;
+    let client = BskyClient::with_credentials(&pds_host, &settings.bluesky.handle, &settings.bluesky.app_password);
     let session_path = session_cache_path(settings);
 
     if let Err(e) = client.load_session_from_file(&session_path).await {
         tracing::warn!("Failed to load cached session from {}: {}", session_path.display(), e);
     }
 
-    Ok((client, session_path))
+    Ok((client, session_path, pds_host))
 }
 
 pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()> {
@@ -63,7 +73,8 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
         return Ok(());
     }
 
-    let client = BskyClient::new(&settings.bluesky.pds_host);
+    let pds_host = resolve_pds_host(settings).await?;
+    let client = BskyClient::new(&pds_host);
     let session_path = session_cache_path(settings);
 
     match client
@@ -71,6 +82,18 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
         .await
     {
         Ok(session) => {
+            let bot_name = client
+                .get_profile(&session.handle)
+                .await
+                .ok()
+                .and_then(|profile| {
+                    profile
+                        .display_name
+                        .filter(|display_name| !display_name.trim().is_empty())
+                        .or(Some(profile.handle))
+                })
+                .unwrap_or_else(|| session.handle.clone());
+
             if let Err(e) = client.save_session_to_file(&session_path).await {
                 tracing::warn!("Failed to persist session to {}: {}", session_path.display(), e);
             }
@@ -81,14 +104,18 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
                     serde_json::to_string(&serde_json::json!({
                         "success": true,
                         "did": session.did,
+                        "name": bot_name,
                         "handle": session.handle,
+                        "pds": pds_host,
                         "session_path": session_path,
                     }))?
                 );
             } else {
                 println!("{}", "Bot account binding successful!".green().bold());
                 println!("  {}: {}", "DID".cyan(), session.did);
+                println!("  {}: {}", "Name".cyan(), bot_name);
                 println!("  {}: {}", "Handle".cyan(), session.handle);
+                println!("  {}: {}", "PDS".cyan(), pds_host);
                 println!("  {}: {}", "Session Cache".cyan(), session_path.display());
                 println!(
                     "  {}: {} seconds",
@@ -116,7 +143,7 @@ pub async fn login(settings: &Settings, json_output: bool) -> anyhow::Result<()>
 }
 
 pub async fn whoami(settings: &Settings, json_output: bool) -> anyhow::Result<()> {
-    let (client, session_path) = build_authenticated_client(settings).await?;
+    let (client, session_path, pds_host) = build_authenticated_client(settings).await?;
 
     match client.ensure_valid_session().await {
         Ok(session) => {
@@ -130,7 +157,7 @@ pub async fn whoami(settings: &Settings, json_output: bool) -> anyhow::Result<()
                     serde_json::to_string(&serde_json::json!({
                         "did": session.did,
                         "handle": session.handle,
-                        "pds": settings.bluesky.pds_host,
+                        "pds": pds_host,
                         "session_path": session_path,
                     }))?
                 );
@@ -138,7 +165,7 @@ pub async fn whoami(settings: &Settings, json_output: bool) -> anyhow::Result<()
                 println!("{}", "Current Session:".green().bold());
                 println!("  {}: {}", "DID".cyan(), session.did);
                 println!("  {}: {}", "Handle".cyan(), session.handle);
-                println!("  {}: {}", "PDS".cyan(), settings.bluesky.pds_host);
+                println!("  {}: {}", "PDS".cyan(), pds_host);
                 println!("  {}: {}", "Session Cache".cyan(), session_path.display());
                 println!(
                     "  {}: {} seconds",
@@ -164,7 +191,7 @@ pub async fn whoami(settings: &Settings, json_output: bool) -> anyhow::Result<()
 }
 
 pub async fn post(settings: &Settings, text: String, json_output: bool) -> anyhow::Result<()> {
-    let (client, session_path) = build_authenticated_client(settings).await?;
+    let (client, session_path, _) = build_authenticated_client(settings).await?;
 
     match client.create_post(&text).await {
         Ok(response) => {
@@ -206,7 +233,7 @@ pub async fn post(settings: &Settings, text: String, json_output: bool) -> anyho
 }
 
 pub async fn reply(settings: &Settings, uri: String, text: String, json_output: bool) -> anyhow::Result<()> {
-    let (client, session_path) = build_authenticated_client(settings).await?;
+    let (client, session_path, _) = build_authenticated_client(settings).await?;
 
     match client.reply_to(&uri, &text).await {
         Ok(response) => {
@@ -248,11 +275,14 @@ pub async fn reply(settings: &Settings, uri: String, text: String, json_output: 
 }
 
 pub async fn resolve(settings: &Settings, handle: String, json_output: bool) -> anyhow::Result<()> {
+    let pds_host = BskyClient::determine_pds_host(&handle, &settings.bluesky.pds_host)
+        .await
+        .with_context(|| format!("Failed to resolve PDS host for `{}`", handle))?;
     let manager = DatabaseManager::open(&settings.database.path).await?;
     run_migrations(manager.db()).await?;
     let conn = manager.db().connect()?;
     let repo = LibsqlRepository::new(conn);
-    let resolver = IdentityResolver::new(repo, settings.bluesky.pds_host.clone());
+    let resolver = IdentityResolver::new(repo, pds_host);
 
     match resolver.resolve_handle_to_did(&handle).await {
         Ok(did) => {
@@ -286,7 +316,8 @@ pub async fn resolve(settings: &Settings, handle: String, json_output: bool) -> 
 }
 
 pub async fn get_post(settings: &Settings, uri: String, json_output: bool) -> anyhow::Result<()> {
-    let client = BskyClient::new(&settings.bluesky.pds_host);
+    let pds_host = resolve_pds_host(settings).await?;
+    let client = BskyClient::new(&pds_host);
 
     match client.get_record_by_uri(&uri).await {
         Ok(record) => {

@@ -30,9 +30,15 @@ Configuration is loaded from (in order of precedence):
 
 1. `--config /path/to/config.toml` flag
 2. `tnbot.toml` in the working directory
-3. Embedded defaults
-4. Environment variables (prefixed with `TNBOT_`, double underscore for nesting: `TNBOT_AI__MODEL`)
-5. `.env` file in the working directory
+3. `config/default.toml` in the working directory
+4. OS config paths (first existing file is used):
+   - Linux/macOS: `$XDG_CONFIG_HOME/thunderbot/config.toml`
+   - Linux/macOS fallback: `~/.config/thunderbot/config.toml`
+   - Linux/macOS additional fallback: `~/.local/share/thunderbot/config.toml`
+   - Windows: `%APPDATA%\\thunderbot\\config.toml`
+5. Embedded defaults
+6. Environment variables (prefixed with `TNBOT_`, double underscore for nesting: `TNBOT_AI__MODEL`)
+7. `.env` file in the working directory
 
 ### Minimal Configuration
 
@@ -43,8 +49,15 @@ Create a `.env` file in your working directory:
 TNBOT_BLUESKY__HANDLE=yourhandle.bsky.social
 TNBOT_BLUESKY__APP_PASSWORD=your-app-password-here
 
-# Required: Your bot's DID (find it at https://plc.directory/yourhandle.bsky.social)
-TNBOT_BOT__DID=did:plc:xxxxx
+# Optional override: resolved from Bluesky APIs by default
+# TNBOT_BLUESKY__PDS_HOST=https://bsky.social
+# TNBOT_BOT__DID=did:plc:xxxxx
+# TNBOT_BOT__NAME=ThunderBot
+
+# Optional override: by default uses OS app data
+# Linux/macOS: ~/.local/share/thunderbot/thunderbot.db
+# Windows: %APPDATA%\thunderbot\thunderbot.db
+# TNBOT_DATABASE__PATH=./data/thunderbot.db
 
 # Optional: Operator login for the web control deck
 # TNBOT_WEB__USERNAME=admin
@@ -59,12 +72,15 @@ GLM_5_API_KEY=your-glm5-api-key
 
 ```toml
 [bot]
+# Optional override; defaults to API-resolved profile name
 name = "ThunderBot"
+# Optional override; defaults to API-resolved DID
 did = "did:plc:xxxxx"
 
 [bluesky]
 handle = "yourhandle.bsky.social"
 app_password = "your-app-password-here"
+# Optional override; defaults to API-resolved PDS host
 pds_host = "https://bsky.social"
 
 [access]
@@ -73,6 +89,7 @@ allowed_handles = []
 unauthorized_policy = "store_no_reply"
 
 [database]
+# Optional override; defaults to OS app data
 path = "./data/thunderbot.db"
 
 [logging]
@@ -288,7 +305,6 @@ docker build -t thunderbot .
 # Run with environment variables
 docker run -e TNBOT_BLUESKY__HANDLE=yourhandle.bsky.social \
            -e TNBOT_BLUESKY__APP_PASSWORD=xxx \
-           -e TNBOT_BOT__DID=did:plc:xxx \
            --rm thunderbot serve
 ```
 

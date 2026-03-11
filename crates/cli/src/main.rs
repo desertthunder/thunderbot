@@ -14,12 +14,12 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(log_level).init();
 
-    tracing::info!("{} starting up...", "Thunderbot".cyan().bold());
+    tracing::info!("Thunderbot starting up...");
 
     let settings = match tnbot_core::config::load_config(cli.config.as_deref()) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to load configuration: {}", e.red());
+            tracing::error!("Failed to load configuration: {}", e);
             std::process::exit(1);
         }
     };

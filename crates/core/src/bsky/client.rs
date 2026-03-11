@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 
 const MAX_TRANSIENT_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 250;
+const DEFAULT_PUBLIC_PDS_HINT: &str = "https://bsky.social";
 
 /// Bluesky XRPC Client
 ///
@@ -37,6 +38,20 @@ pub struct BskyClient {
 struct Credentials {
     handle: String,
     app_password: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PlcDocument {
+    service: Option<Vec<PlcService>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PlcService {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    service_type: Option<String>,
+    #[serde(rename = "serviceEndpoint")]
+    service_endpoint: Option<String>,
 }
 
 impl BskyClient {
@@ -62,6 +77,11 @@ impl BskyClient {
         }
     }
 
+    /// Return the configured PDS host URL for this client.
+    pub fn pds_host(&self) -> &str {
+        &self.pds_host
+    }
+
     /// Check if the client has an active session
     pub async fn is_authenticated(&self) -> bool {
         let session = self.session.read().await;
@@ -83,6 +103,13 @@ impl BskyClient {
     ///
     /// Calls `com.atproto.server.createSession` and stores the session tokens.
     pub async fn login(&self, handle: &str, app_password: &str) -> Result<Session> {
+        tracing::debug!(
+            handle = %handle,
+            pds_host = %self.pds_host,
+            app_password = %obscure_secret(app_password),
+            "Authentication Credentials"
+        );
+        tracing::info!(handle = %handle,"Authenticating As");
         let url = format!("{}/xrpc/com.atproto.server.createSession", self.pds_host);
 
         let request = CreateSessionRequest { identifier: handle.to_string(), password: app_password.to_string() };
@@ -103,6 +130,52 @@ impl BskyClient {
         tracing::info!("Successfully authenticated as {} ({})", session.handle, session.did);
 
         Ok(session)
+    }
+
+    /// Discover the account's PDS host from handle via Bluesky APIs.
+    pub async fn discover_pds_host(handle: &str) -> Result<String> {
+        let client = reqwest::Client::new();
+        let resolve_url = format!(
+            "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle={}",
+            urlencoding::encode(handle)
+        );
+
+        let resolve_resp = client.get(&resolve_url).send().await?;
+        if !resolve_resp.status().is_success() {
+            let status = resolve_resp.status();
+            let error_response = resolve_resp.json::<XrpcErrorResponse>().await.ok();
+            return Err(BotError::from_xrpc_status(status, error_response));
+        }
+        let resolved: ResolveHandleResponse = resolve_resp.json().await?;
+
+        let plc_url = format!("https://plc.directory/{}", urlencoding::encode(&resolved.did));
+        let plc_resp = client.get(&plc_url).send().await?;
+        if !plc_resp.status().is_success() {
+            let status = plc_resp.status();
+            let error_response = plc_resp.json::<XrpcErrorResponse>().await.ok();
+            return Err(BotError::from_xrpc_status(status, error_response));
+        }
+        let plc_doc: PlcDocument = plc_resp.json().await?;
+
+        extract_pds_host(plc_doc.service.as_deref().unwrap_or(&[])).ok_or_else(|| {
+            BotError::Validation(format!(
+                "Could not discover PDS endpoint from PLC document for handle `{}`",
+                handle
+            ))
+        })
+    }
+
+    /// Determine which PDS host to use.
+    ///
+    /// If `configured_pds_host` is provided and differs from the default public
+    /// hint, it is treated as an explicit override. Otherwise, the PDS is
+    /// discovered from Bluesky APIs.
+    pub async fn determine_pds_host(handle: &str, configured_pds_host: &str) -> Result<String> {
+        let configured = configured_pds_host.trim();
+        if !configured.is_empty() && configured != DEFAULT_PUBLIC_PDS_HINT {
+            return Ok(configured.to_string());
+        }
+        Self::discover_pds_host(handle).await
     }
 
     /// Refresh the current session
@@ -414,7 +487,11 @@ impl BskyClient {
             urlencoding::encode(handle)
         );
 
-        let response = self.http.get(&url).send().await?;
+        let response = self
+            .request_with_optional_auth(self.http.get(&url))
+            .await
+            .send()
+            .await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -436,7 +513,11 @@ impl BskyClient {
             urlencoding::encode(actor)
         );
 
-        let response = self.http.get(&url).send().await?;
+        let response = self
+            .request_with_optional_auth(self.http.get(&url))
+            .await
+            .send()
+            .await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -445,6 +526,13 @@ impl BskyClient {
         }
 
         response.json().await.map_err(|e| e.into())
+    }
+
+    async fn request_with_optional_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.ensure_valid_session().await {
+            Ok(session) => request.header("Authorization", session.auth_header()),
+            Err(_) => request,
+        }
     }
 
     /// Update the bot profile description by applying a leading status marker.
@@ -503,6 +591,46 @@ fn apply_status_prefix(existing: &str, status_emoji: &str) -> String {
     }
 }
 
+fn extract_pds_host(services: &[PlcService]) -> Option<String> {
+    let preferred = services
+        .iter()
+        .find(|service| service.id.as_deref() == Some("#atproto_pds"));
+    let fallback = services
+        .iter()
+        .find(|service| service.service_type.as_deref() == Some("AtprotoPersonalDataServer"));
+
+    let endpoint = preferred
+        .and_then(|service| service.service_endpoint.as_deref())
+        .or_else(|| fallback.and_then(|service| service.service_endpoint.as_deref()))?;
+
+    let normalized = endpoint.trim().trim_end_matches('/').to_string();
+    if normalized.starts_with("https://") || normalized.starts_with("http://") {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn obscure_secret(secret: &str) -> String {
+    if secret.is_empty() {
+        return "<empty>".to_string();
+    }
+    if secret.chars().count() <= 4 {
+        return "***".to_string();
+    }
+
+    let head: String = secret.chars().take(2).collect();
+    let tail: String = secret
+        .chars()
+        .rev()
+        .take(2)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{}***{}", head, tail)
+}
+
 async fn sleep_with_jitter_backoff(attempt: usize) {
     let factor = 1_u64 << attempt;
     let base = INITIAL_BACKOFF_MS.saturating_mul(factor);
@@ -544,6 +672,32 @@ mod tests {
     fn test_apply_status_prefix_handles_empty_description() {
         let result = apply_status_prefix("", "🔴");
         assert_eq!(result, "🔴");
+    }
+
+    #[test]
+    fn test_obscure_secret_masks_middle() {
+        assert_eq!(obscure_secret("abcd"), "***");
+        assert_eq!(obscure_secret("abcdefgh"), "ab***gh");
+        assert_eq!(obscure_secret(""), "<empty>");
+    }
+
+    #[test]
+    fn test_extract_pds_host_prefers_atproto_pds() {
+        let services = vec![
+            PlcService {
+                id: Some("#other".to_string()),
+                service_type: Some("AtprotoPersonalDataServer".to_string()),
+                service_endpoint: Some("https://fallback.example".to_string()),
+            },
+            PlcService {
+                id: Some("#atproto_pds".to_string()),
+                service_type: Some("AtprotoPersonalDataServer".to_string()),
+                service_endpoint: Some("https://preferred.example/".to_string()),
+            },
+        ];
+
+        let host = extract_pds_host(&services).unwrap();
+        assert_eq!(host, "https://preferred.example");
     }
 
     #[tokio::test]

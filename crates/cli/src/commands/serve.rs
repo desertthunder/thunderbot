@@ -15,6 +15,8 @@ use tnbot_core::jetstream::{EventProcessor, FilteredEvent, ProcessedEvent};
 use tnbot_core::services::{AccessPolicy, ActionPipeline, MemoryRetriever, MemoryRetrieverConfig};
 use tnbot_web::runtime::SharedRuntimeState;
 
+const DEFAULT_BOT_NAME: &str = "ThunderBot";
+
 struct ActionEventProcessor {
     pipeline: ActionPipeline<LibsqlRepository>,
     runtime: SharedRuntimeState,
@@ -91,36 +93,107 @@ fn create_ai_client(settings: &Settings) -> anyhow::Result<Glm5Client> {
     }
 }
 
-fn create_bsky_client(settings: &Settings, dry_run: bool) -> anyhow::Result<BskyClient> {
-    if dry_run {
-        return Ok(BskyClient::new(&settings.bluesky.pds_host));
+async fn create_bsky_client(settings: &Settings, dry_run: bool) -> anyhow::Result<BskyClient> {
+    let handle = settings.bluesky.handle.trim();
+    if handle.is_empty() {
+        if dry_run {
+            let fallback = settings.bluesky.pds_host.trim();
+            let fallback = if fallback.is_empty() { "https://bsky.social" } else { fallback };
+            return Ok(BskyClient::new(fallback));
+        }
+        anyhow::bail!("Bluesky handle is required. Set TNBOT_BLUESKY__HANDLE.");
     }
 
-    if settings.bluesky.handle.trim().is_empty() || settings.bluesky.app_password.trim().is_empty() {
-        anyhow::bail!(
-            "Bluesky credentials are not configured. Set TNBOT_BLUESKY__HANDLE and TNBOT_BLUESKY__APP_PASSWORD."
-        );
+    let pds_host = BskyClient::determine_pds_host(handle, &settings.bluesky.pds_host)
+        .await
+        .with_context(|| format!("Failed to resolve PDS host for `{}`", handle))?;
+    tracing::info!(handle = %handle, pds_host = %pds_host, "Resolved PDS host from Bluesky API");
+
+    if dry_run {
+        return Ok(BskyClient::new(&pds_host));
+    }
+
+    if settings.bluesky.app_password.trim().is_empty() {
+        anyhow::bail!("Bluesky app password is required. Set TNBOT_BLUESKY__APP_PASSWORD.");
     }
 
     Ok(BskyClient::with_credentials(
-        &settings.bluesky.pds_host,
-        &settings.bluesky.handle,
+        &pds_host,
+        handle,
         &settings.bluesky.app_password,
     ))
 }
 
-async fn ensure_bot_identity_binding(settings: &Settings, client: &BskyClient, dry_run: bool) -> anyhow::Result<()> {
+async fn resolve_bot_identity(settings: &Settings, client: &BskyClient) -> anyhow::Result<(String, String)> {
+    let handle = settings.bluesky.handle.trim();
+    if handle.is_empty() {
+        if settings.bot.did.trim().is_empty() {
+            anyhow::bail!("Cannot resolve bot identity without a Bluesky handle. Set TNBOT_BLUESKY__HANDLE.");
+        }
+        let fallback_name = if settings.bot.name.trim().is_empty() {
+            DEFAULT_BOT_NAME.to_string()
+        } else {
+            settings.bot.name.clone()
+        };
+        return Ok((settings.bot.did.clone(), fallback_name));
+    }
+
+    let discovered_did = client
+        .resolve_handle(handle)
+        .await
+        .with_context(|| format!("Failed to resolve DID for handle `{}`", handle))?;
+    let did_override = settings.bot.did.trim();
+    let did = if did_override.is_empty() {
+        discovered_did.clone()
+    } else {
+        if did_override != discovered_did {
+            tracing::warn!(
+                configured_did = %did_override,
+                discovered_did = %discovered_did,
+                handle = %handle,
+                "Configured bot DID overrides the DID discovered from Bluesky APIs"
+            );
+        }
+        did_override.to_string()
+    };
+
+    let profile = client
+        .get_profile(handle)
+        .await
+        .with_context(|| format!("Failed to resolve profile for handle `{}`", handle))?;
+    let discovered_name = profile
+        .display_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(profile.handle);
+    let name_override = settings.bot.name.trim();
+    let name = if name_override.is_empty() || name_override == DEFAULT_BOT_NAME {
+        discovered_name
+    } else {
+        name_override.to_string()
+    };
+
+    tracing::info!(
+        handle = %handle,
+        pds_host = %client.pds_host(),
+        did = %did,
+        bot_name = %name,
+        "Resolved bot identity from Bluesky APIs"
+    );
+
+    Ok((did, name))
+}
+
+async fn verify_authenticated_identity(client: &BskyClient, expected_did: &str, dry_run: bool) -> anyhow::Result<()> {
     if dry_run {
         return Ok(());
     }
 
     let session = client.ensure_valid_session().await?;
-    let configured_did = settings.bot.did.trim();
-    if !configured_did.is_empty() && configured_did != session.did {
+    if session.did != expected_did {
         anyhow::bail!(
-            "Configured bot.did ({}) does not match authenticated Bluesky account DID ({}).",
-            configured_did,
-            session.did
+            "Authenticated DID `{}` does not match resolved bot DID `{}`",
+            session.did,
+            expected_did
         );
     }
 
@@ -199,10 +272,15 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     println!("{}", mode_banner.green().bold());
 
     let ai_client = create_ai_client(settings)?;
-    let bsky_client = create_bsky_client(settings, dry_run)?;
-    ensure_bot_identity_binding(settings, &bsky_client, dry_run).await?;
+    let bsky_client = create_bsky_client(settings, dry_run).await?;
+    let (resolved_bot_did, resolved_bot_name) = resolve_bot_identity(settings, &bsky_client).await?;
+    verify_authenticated_identity(&bsky_client, &resolved_bot_did, dry_run).await?;
     let access_policy = build_access_policy(settings, &bsky_client).await?;
     let prompt_builder = PromptBuilder::new(DEFAULT_CONSTITUTION);
+    let mut runtime_settings = settings.clone();
+    runtime_settings.bluesky.pds_host = bsky_client.pds_host().to_string();
+    runtime_settings.bot.did = resolved_bot_did.clone();
+    runtime_settings.bot.name = resolved_bot_name;
 
     let db_manager = DatabaseManager::open(&settings.database.path).await?;
     run_migrations(db_manager.db()).await?;
@@ -246,7 +324,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
         bsky_client.clone(),
         (*repo).clone(),
         prompt_builder,
-        settings.bot.did.clone(),
+        runtime_settings.bot.did.clone(),
     );
     if dry_run {
         action_pipeline = action_pipeline.with_dry_run();
@@ -265,14 +343,15 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
 
     update_presence_status(&presence_client, "🟢", dry_run).await;
 
-    let web_settings = settings.clone();
+    let web_settings = runtime_settings.clone();
     let web_handle = tokio::spawn(async move {
         if let Err(e) = tnbot_web::run(web_settings, runtime, dry_run).await {
             tracing::error!(error = %e, "Web dashboard stopped");
         }
     });
 
-    let daemon_result = super::jetstream::listen_with_processor(processor, None, settings.bot.did.clone(), None).await;
+    let daemon_result =
+        super::jetstream::listen_with_processor(processor, None, runtime_settings.bot.did.clone(), None).await;
 
     web_handle.abort();
     let _ = web_handle.await;
@@ -284,7 +363,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_bot_identity_binding, resolve_allowed_dids_with};
+    use super::{resolve_allowed_dids_with, verify_authenticated_identity};
     use tnbot_core::Settings;
     use tnbot_core::bsky::{BskyClient, CreateSessionResponse, Session};
 
@@ -311,7 +390,7 @@ mod tests {
         .unwrap();
         client.set_session(session).await;
 
-        let result = ensure_bot_identity_binding(&settings, &client, false).await;
+        let result = verify_authenticated_identity(&client, &settings.bot.did, false).await;
         assert!(result.is_err());
     }
 
@@ -319,7 +398,11 @@ mod tests {
     async fn test_bind_validation_skips_in_dry_run() {
         let settings = Settings::default();
         let client = BskyClient::new("https://bsky.social");
-        assert!(ensure_bot_identity_binding(&settings, &client, true).await.is_ok());
+        assert!(
+            verify_authenticated_identity(&client, &settings.bot.did, true)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
