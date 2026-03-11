@@ -2,26 +2,29 @@
 
 This document outlines the engineering specification for a **Stateful AI Agent** on the AT Protocol (Bluesky), utilizing **GLM-5** for reasoning, **Rust** for infrastructure, and **HTMX + Pico CSS** for the management dashboard.
 
-## ToC
+## Overview
 
-- [Stateful Agent Bot Specification](#stateful-agent-bot-specification)
-  - [ToC](#toc)
-  - [System Architecture](#system-architecture)
-  - [Overview](#overview)
+- [System Architecture](#system-architecture)
+- [Parking Lot](#parking-lot)
+- Part 1
   - [Milestone 1: The Foundation, Ingestion Layer, and CLI](#milestone-1-the-foundation-ingestion-layer-and-cli)
   - [Milestone 2: State Persistence and Context](#milestone-2-state-persistence-and-context)
   - [Milestone 3: Bluesky XRPC Client](#milestone-3-bluesky-xrpc-client)
   - [Milestone 4: The Cognitive Core (GLM-5)](#milestone-4-the-cognitive-core-glm-5)
   - [Milestone 5: Vector Memory and Semantic Search](#milestone-5-vector-memory-and-semantic-search)
   - [Milestone 6: The Control Deck (Web UI)](#milestone-6-the-control-deck-web-ui)
+- Part 2
   - [Milestone 7: Observability \& Health](#milestone-7-observability--health)
   - [Milestone 8: Developer Experience](#milestone-8-developer-experience)
+- Part 3
   - [Milestone 9: Multi-Model Support](#milestone-9-multi-model-support)
+- Part 4
   - [Milestone 10: Dashboard Enhancements](#milestone-10-dashboard-enhancements)
   - [Milestone 11: Operational Controls](#milestone-11-operational-controls)
+- Part 5
   - [Milestone 12: Voice Interface](#milestone-12-voice-interface)
+- Part 6
   - [Milestone 13: Deployment/Self-Hosting](#milestone-13-deploymentself-hosting)
-  - [Parking Lot](#parking-lot)
 
 ## System Architecture
 
@@ -33,20 +36,6 @@ This document outlines the engineering specification for a **Stateful AI Agent**
 - **Bluesky Integration**: Manual XRPC client via `reqwest` for full control over authentication and posting.
 - **Frontend**: Server-side rendered HTML (HTMX) with Pico CSS, served directly from the application.
 - **CLI**: `clap`-based command-line interface for ad-hoc testing and system interaction.
-
-## Overview
-
-Part 1: Milestones 1-6
-
-Part 2: Milestones 7 & 8
-
-Part 3: Milestone 9
-
-Part 4: Milestones 10 & 11
-
-Part 5: Milestone 12
-
-Part 6: Milestone 13
 
 ## Milestone 1: The Foundation, Ingestion Layer, and CLI
 

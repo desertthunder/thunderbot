@@ -1,19 +1,18 @@
 mod formatters;
+mod pages;
 mod partials;
-pub mod runtime;
 mod views;
 
+pub mod runtime;
+
 use anyhow::Context;
-use axum::extract::{Form, Query, Request, State};
-use axum::http::{StatusCode, header};
-use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use chrono::{DateTime, Utc};
+use axum::Router;
+use axum::http::header;
+use axum::middleware;
+use axum::response::{IntoResponse, Redirect};
+use axum::routing::get;
+use chrono::Utc;
 use runtime::SharedRuntimeState;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -22,13 +21,10 @@ use std::time::{Duration, Instant};
 use tnbot_core::Settings;
 use tnbot_core::bsky::BskyClient;
 use tnbot_core::db::connection::DatabaseManager;
-use tnbot_core::db::models::{Conversation, CreateConversationParams, FailedEvent, Identity, Role};
-use tnbot_core::db::repository::{
-    ConversationRepository, FailedEventRepository, IdentityRepository, LibsqlRepository, MemoryRepository,
-};
+use tnbot_core::db::models::{Conversation, FailedEvent, Identity};
+use tnbot_core::db::repository::{ConversationRepository, FailedEventRepository, IdentityRepository, LibsqlRepository};
 use tokio::sync::RwLock;
 
-const SESSION_COOKIE: &str = "tnbot_session";
 const CSS: &str = include_str!("assets/stylesheet.css");
 
 #[derive(Clone)]
@@ -142,47 +138,6 @@ struct DashboardSnapshot {
     last_model_latency_ms: u64,
 }
 
-#[derive(Debug)]
-struct ThreadSummary {
-    root_uri: String,
-    handle: String,
-    preview: String,
-    last_seen: String,
-    message_count: usize,
-}
-
-#[derive(Debug)]
-struct ThreadMessageView {
-    role: Role,
-    author: String,
-    content: String,
-    timestamp: String,
-    latency: Option<String>,
-}
-
-#[derive(Debug)]
-struct ConfigSnapshot {
-    bot_name: String,
-    bot_did: String,
-    bluesky_handle: String,
-    bluesky_pds_host: String,
-    bluesky_password_status: String,
-    ai_base_url: String,
-    ai_model: String,
-    ai_api_key_status: String,
-    db_path: String,
-    logging_level: String,
-    logging_format: String,
-    memory_enabled: bool,
-    memory_ttl_days: u32,
-    memory_consolidation_ttl_days: u32,
-    memory_dedup_threshold: f64,
-    web_bind_addr: String,
-    web_username: String,
-    web_password_mode: String,
-    dry_run: bool,
-}
-
 pub async fn run(settings: Settings, runtime: SharedRuntimeState, dry_run: bool) -> anyhow::Result<()> {
     let config = WebConfig::from_env();
 
@@ -239,23 +194,22 @@ pub async fn run(settings: Settings, runtime: SharedRuntimeState, dry_run: bool)
 
 fn build_router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/dashboard", get(dashboard_page))
-        .route("/dashboard/live", get(dashboard_live))
-        .route("/logs", get(logs_page))
-        .route("/chat", get(chat_page))
-        .route("/config", get(config_page))
-        .route("/admin/pause", post(set_pause))
-        .route("/admin/broadcast", post(broadcast_post))
-        .route("/admin/reply", post(reply_in_thread))
-        .route("/admin/clear-thread", post(clear_thread_context))
-        .route("/logout", post(logout))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+        .merge(pages::dashboard::protected_routes())
+        .merge(pages::logs::protected_routes())
+        .merge(pages::config::protected_routes())
+        .merge(pages::admin::protected_routes())
+        .merge(pages::chat::protected_routes())
+        .merge(pages::login::protected_routes())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            pages::login::require_auth,
+        ));
 
     Router::new()
         .route("/", get(root_redirect))
-        .route("/health", get(health))
         .route("/assets/app.css", get(stylesheet))
-        .route("/login", get(login_page).post(login_submit))
+        .merge(pages::health::public_routes())
+        .merge(pages::login::public_routes())
         .merge(protected)
         .with_state(state)
 }
@@ -266,463 +220,6 @@ async fn root_redirect() -> Redirect {
 
 async fn stylesheet() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], CSS)
-}
-
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    paused: bool,
-    queue_depth: usize,
-    last_jetstream_event_us: i64,
-    uptime_seconds: u64,
-    processed_events: u64,
-    failed_events: u64,
-}
-
-async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let degraded = state.runtime.events_failed() > 0 && state.runtime.events_in_flight() > 40;
-    let response = HealthResponse {
-        status: if degraded { "degraded" } else { "ok" },
-        paused: state.runtime.is_paused(),
-        queue_depth: state.runtime.events_in_flight(),
-        last_jetstream_event_us: state.runtime.last_jetstream_event_us(),
-        uptime_seconds: state.runtime.started_at().elapsed().as_secs(),
-        processed_events: state.runtime.events_processed(),
-        failed_events: state.runtime.events_failed(),
-    };
-
-    let status = if degraded { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
-
-    (status, Json(response))
-}
-
-async fn require_auth(State(state): State<AppState>, jar: CookieJar, request: Request, next: Next) -> Response {
-    if let Some(cookie) = jar.get(SESSION_COOKIE)
-        && state.auth.validate_session(cookie.value()).await
-    {
-        return next.run(request).await;
-    }
-
-    if request.headers().contains_key("HX-Request") {
-        return (StatusCode::UNAUTHORIZED, [("HX-Redirect", "/login")]).into_response();
-    }
-
-    Redirect::to("/login").into_response()
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct LoginQuery {
-    error: Option<String>,
-    notice: Option<String>,
-}
-
-async fn login_page(
-    State(state): State<AppState>, jar: CookieJar, Query(query): Query<LoginQuery>,
-) -> impl IntoResponse {
-    if let Some(cookie) = jar.get(SESSION_COOKIE)
-        && state.auth.validate_session(cookie.value()).await
-    {
-        Redirect::to("/dashboard").into_response()
-    } else {
-        Html(views::login_page(query.error.as_deref(), query.notice.as_deref()).into_string()).into_response()
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginFormData {
-    username: String,
-    password: String,
-}
-
-async fn login_submit(
-    State(state): State<AppState>, jar: CookieJar, Form(form): Form<LoginFormData>,
-) -> impl IntoResponse {
-    if !state
-        .auth
-        .verify_credentials(form.username.trim(), form.password.trim())
-    {
-        return Redirect::to("/login?error=Invalid%20credentials").into_response();
-    }
-
-    let token = state.auth.issue_session().await;
-    let cookie = Cookie::build((SESSION_COOKIE, token))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .build();
-
-    (jar.add(cookie), Redirect::to("/dashboard")).into_response()
-}
-
-async fn logout(jar: CookieJar) -> impl IntoResponse {
-    let cookie = Cookie::build((SESSION_COOKIE, ""))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .build();
-
-    (jar.remove(cookie), Redirect::to("/login?notice=Signed%20out")).into_response()
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct DashboardQuery {
-    notice: Option<String>,
-    error: Option<String>,
-}
-
-async fn dashboard_page(State(state): State<AppState>, Query(query): Query<DashboardQuery>) -> impl IntoResponse {
-    let snapshot = dashboard_snapshot_or_default(&state).await;
-
-    let conversations = load_recent_conversations(&state.db_path, 25).await.unwrap_or_default();
-    let identities = load_identities(&state.db_path, 25).await.unwrap_or_default();
-
-    let body = views::dashboard_content(
-        query.notice.as_deref(),
-        query.error.as_deref(),
-        &snapshot,
-        state.dry_run,
-        &conversations,
-        &identities,
-    );
-
-    Html(
-        views::shell(
-            &state,
-            NavItem::Dashboard,
-            "Dashboard",
-            snapshot.paused,
-            &snapshot.uptime,
-            body,
-        )
-        .into_string(),
-    )
-}
-
-async fn dashboard_live(State(state): State<AppState>) -> impl IntoResponse {
-    match load_dashboard_snapshot(&state).await {
-        Ok(snapshot) => Html(views::live_status_cards(&snapshot).into_string()).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to refresh dashboard live panel");
-            Html("<div class=\"alert error\">Live status unavailable</div>".to_string()).into_response()
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct LogsQuery {
-    q: Option<String>,
-}
-
-async fn logs_page(State(state): State<AppState>, Query(query): Query<LogsQuery>) -> Response {
-    let snapshot = dashboard_snapshot_or_default(&state).await;
-
-    let mut failed_events = load_recent_failed_events(&state.db_path, 100).await.unwrap_or_default();
-
-    if let Some(filter) = query
-        .q
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_lowercase)
-    {
-        failed_events.retain(|event| {
-            event.post_uri.to_lowercase().contains(&filter)
-                || event.error.to_lowercase().contains(&filter)
-                || event.event_json.to_lowercase().contains(&filter)
-        });
-    }
-
-    let body = views::logs_content(&snapshot, query.q.as_deref(), &failed_events);
-
-    Html(views::shell(&state, NavItem::Logs, "Logs", snapshot.paused, &snapshot.uptime, body).into_string())
-        .into_response()
-}
-
-async fn config_page(State(state): State<AppState>) -> Response {
-    let snapshot = dashboard_snapshot_or_default(&state).await;
-    let config = build_config_snapshot(&state);
-    let body = views::config_content(&config);
-
-    Html(
-        views::shell(
-            &state,
-            NavItem::Config,
-            "Config",
-            snapshot.paused,
-            &snapshot.uptime,
-            body,
-        )
-        .into_string(),
-    )
-    .into_response()
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ChatQuery {
-    root: Option<String>,
-    q: Option<String>,
-    notice: Option<String>,
-    error: Option<String>,
-}
-
-async fn chat_page(State(state): State<AppState>, Query(query): Query<ChatQuery>) -> Response {
-    let repo = match open_repo(&state.db_path).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            let content = views::chat_error_content(&e.to_string());
-
-            return Html(
-                views::shell(
-                    &state,
-                    NavItem::Chat,
-                    "Chat",
-                    state.runtime.is_paused(),
-                    &formatters::fuptime(state.runtime.started_at()),
-                    content,
-                )
-                .into_string(),
-            )
-            .into_response();
-        }
-    };
-
-    let thread_summaries = load_thread_summaries(&repo, query.q.as_deref())
-        .await
-        .unwrap_or_default();
-
-    let selected_root = query
-        .root
-        .clone()
-        .or_else(|| thread_summaries.first().map(|thread| thread.root_uri.clone()));
-
-    let thread_messages = if let Some(root_uri) = selected_root.as_deref() {
-        load_thread_messages(&repo, root_uri).await.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    let content = views::chat_content(&query, &thread_summaries, selected_root.as_deref(), &thread_messages);
-
-    Html(
-        views::shell(
-            &state,
-            NavItem::Chat,
-            "Chat",
-            state.runtime.is_paused(),
-            &formatters::fuptime(state.runtime.started_at()),
-            content,
-        )
-        .into_string(),
-    )
-    .into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct PauseForm {
-    paused: bool,
-}
-
-async fn set_pause(State(state): State<AppState>, Form(form): Form<PauseForm>) -> impl IntoResponse {
-    state.runtime.set_paused(form.paused);
-
-    if form.paused {
-        redirect_with_message("/dashboard", "notice", "Bot paused")
-    } else {
-        redirect_with_message("/dashboard", "notice", "Bot resumed")
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct BroadcastForm {
-    text: String,
-}
-
-async fn broadcast_post(State(state): State<AppState>, Form(form): Form<BroadcastForm>) -> impl IntoResponse {
-    let text = form.text.trim();
-
-    if text.is_empty() {
-        return redirect_with_message("/dashboard", "error", "Broadcast text cannot be empty");
-    }
-
-    if text.chars().count() > 300 {
-        return redirect_with_message("/dashboard", "error", "Broadcast exceeds 300 characters");
-    }
-
-    if state.dry_run {
-        return redirect_with_message(
-            "/dashboard",
-            "notice",
-            "Dry-run mode: broadcast preview complete, nothing posted",
-        );
-    }
-
-    let Some(client) = state.bsky_client.clone() else {
-        return redirect_with_message(
-            "/dashboard",
-            "error",
-            "Broadcast unavailable: Bluesky credentials are missing",
-        );
-    };
-
-    match client.create_post(text).await {
-        Ok(record) => {
-            if let Ok(repo) = open_repo(&state.db_path).await {
-                let _ = repo
-                    .create_conversation(CreateConversationParams {
-                        root_uri: record.uri.clone(),
-                        post_uri: record.uri.clone(),
-                        parent_uri: None,
-                        author_did: bot_did_or_fallback(&state.settings),
-                        role: Role::Model,
-                        content: text.to_string(),
-                        cid: Some(record.cid.clone()),
-                        created_at: Utc::now().to_rfc3339(),
-                    })
-                    .await;
-            }
-
-            redirect_with_message("/dashboard", "notice", "Broadcast posted successfully")
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Manual broadcast failed");
-            redirect_with_message("/dashboard", "error", "Failed to post broadcast")
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ThreadReplyForm {
-    root_uri: String,
-    text: String,
-}
-
-async fn reply_in_thread(State(state): State<AppState>, Form(form): Form<ThreadReplyForm>) -> impl IntoResponse {
-    let text = form.text.trim();
-    let target = format!("/chat?root={}", urlencoding::encode(&form.root_uri));
-
-    if form.root_uri.trim().is_empty() {
-        return redirect_with_message("/chat", "error", "Thread root is required");
-    }
-
-    if text.is_empty() {
-        return redirect_with_message(&target, "error", "Reply text cannot be empty");
-    }
-
-    if text.chars().count() > 300 {
-        return redirect_with_message(&target, "error", "Reply exceeds 300 characters");
-    }
-
-    if state.dry_run {
-        return redirect_with_message(
-            &target,
-            "notice",
-            "Dry-run mode: manual reply preview complete, nothing posted",
-        );
-    }
-
-    let Some(client) = state.bsky_client.clone() else {
-        return redirect_with_message(&target, "error", "Reply unavailable: Bluesky credentials are missing");
-    };
-
-    let repo = match open_repo(&state.db_path).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to open repository for manual reply");
-            return redirect_with_message(&target, "error", "Could not access thread data");
-        }
-    };
-
-    let thread = match repo.get_thread_by_root(&form.root_uri).await {
-        Ok(thread) => thread,
-        Err(e) => {
-            tracing::error!(error = %e, root = %form.root_uri, "Failed to load thread for manual reply");
-            return redirect_with_message(&target, "error", "Could not load thread history");
-        }
-    };
-
-    let Some(parent) = thread.last() else {
-        return redirect_with_message(&target, "error", "Thread has no messages to reply to");
-    };
-
-    match client.reply_to(&parent.post_uri, text).await {
-        Ok(record) => {
-            let _ = repo
-                .create_conversation(CreateConversationParams {
-                    root_uri: form.root_uri.clone(),
-                    post_uri: record.uri.clone(),
-                    parent_uri: Some(parent.post_uri.clone()),
-                    author_did: bot_did_or_fallback(&state.settings),
-                    role: Role::Model,
-                    content: text.to_string(),
-                    cid: Some(record.cid.clone()),
-                    created_at: Utc::now().to_rfc3339(),
-                })
-                .await;
-
-            redirect_with_message(&target, "notice", "Manual reply posted")
-        }
-        Err(e) => {
-            tracing::error!(error = %e, root = %form.root_uri, "Manual thread reply failed");
-            redirect_with_message(&target, "error", "Failed to send manual reply")
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ClearThreadForm {
-    root_uri: String,
-}
-
-async fn clear_thread_context(State(state): State<AppState>, Form(form): Form<ClearThreadForm>) -> impl IntoResponse {
-    let target = "/chat";
-
-    if form.root_uri.trim().is_empty() {
-        return redirect_with_message(target, "error", "Thread root is required");
-    }
-
-    let repo = match open_repo(&state.db_path).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to open repository for clear thread");
-            return redirect_with_message(target, "error", "Could not access thread data");
-        }
-    };
-
-    let _ = repo.delete_memories_by_root(&form.root_uri).await;
-
-    match repo
-        .conn()
-        .execute(
-            "DELETE FROM conversations WHERE root_uri = ?1",
-            [form.root_uri.as_str()],
-        )
-        .await
-    {
-        Ok(deleted) => redirect_with_message(
-            target,
-            "notice",
-            &format!("Cleared {} conversation rows for thread", deleted),
-        ),
-        Err(e) => {
-            tracing::error!(error = %e, root = %form.root_uri, "Failed clearing thread context");
-            redirect_with_message(target, "error", "Failed to clear thread context")
-        }
-    }
-}
-
-fn redirect_with_message(path: &str, key: &str, message: &str) -> Redirect {
-    let connector = if path.contains('?') { '&' } else { '?' };
-    let location = format!("{}{}{}={}", path, connector, key, urlencoding::encode(message));
-    Redirect::to(&location)
-}
-
-fn chat_thread_href(root_uri: &str, search: Option<&str>) -> String {
-    let mut href = format!("/chat?root={}", urlencoding::encode(root_uri));
-    if let Some(query) = search.filter(|value| !value.trim().is_empty()) {
-        href.push_str("&q=");
-        href.push_str(&urlencoding::encode(query));
-    }
-    href
 }
 
 async fn dashboard_snapshot_or_default(state: &AppState) -> DashboardSnapshot {
@@ -743,35 +240,6 @@ async fn dashboard_snapshot_or_default(state: &AppState) -> DashboardSnapshot {
             last_model_latency_ms: state.runtime.last_model_latency_ms(),
         }
     })
-}
-
-fn build_config_snapshot(state: &AppState) -> ConfigSnapshot {
-    let settings = &state.settings;
-    ConfigSnapshot {
-        bot_name: settings.bot.name.clone(),
-        bot_did: formatters::non_empty_or_missing(&settings.bot.did),
-        bluesky_handle: formatters::non_empty_or_missing(&settings.bluesky.handle),
-        bluesky_pds_host: settings.bluesky.pds_host.clone(),
-        bluesky_password_status: formatters::secret_status(&settings.bluesky.app_password),
-        ai_base_url: settings.ai.base_url.clone(),
-        ai_model: settings.ai.model.clone(),
-        ai_api_key_status: formatters::secret_status(&settings.ai.api_key),
-        db_path: settings.database.path.display().to_string(),
-        logging_level: settings.logging.level.clone(),
-        logging_format: format!("{:?}", settings.logging.format).to_lowercase(),
-        memory_enabled: settings.memory.enabled,
-        memory_ttl_days: settings.memory.ttl_days,
-        memory_consolidation_ttl_days: settings.memory.consolidation_ttl_days,
-        memory_dedup_threshold: settings.memory.dedup_threshold,
-        web_bind_addr: state.web.bind_addr.to_string(),
-        web_username: state.web.username.clone(),
-        web_password_mode: if state.web.generated_password {
-            "ephemeral (generated at startup)".to_string()
-        } else {
-            "configured via TNBOT_WEB__PASSWORD".to_string()
-        },
-        dry_run: state.dry_run,
-    }
 }
 
 async fn load_dashboard_snapshot(state: &AppState) -> anyhow::Result<DashboardSnapshot> {
@@ -838,115 +306,6 @@ async fn load_identities(db_path: &Path, limit: usize) -> anyhow::Result<Vec<Ide
     identities.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
     identities.truncate(limit);
     Ok(identities)
-}
-
-async fn load_thread_summaries(repo: &LibsqlRepository, search: Option<&str>) -> anyhow::Result<Vec<ThreadSummary>> {
-    let mut summaries = Vec::new();
-    let normalized_query = search
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_lowercase);
-
-    let threads = repo.get_recent_threads(100).await?;
-
-    for (root_uri, last_activity_us) in threads {
-        let messages = repo.get_thread_by_root(&root_uri).await?;
-        if messages.is_empty() {
-            continue;
-        }
-
-        let preview_message = messages.last().expect("checked empty");
-        let message_count = messages.len();
-
-        let handle_did = messages
-            .iter()
-            .rev()
-            .find(|message| message.role == Role::User)
-            .map(|message| message.author_did.clone())
-            .unwrap_or_else(|| preview_message.author_did.clone());
-
-        let handle = match repo.get_by_did(&handle_did).await? {
-            Some(identity) => format!("@{}", identity.handle),
-            None => formatters::shorten(&handle_did, 28),
-        };
-
-        if let Some(query) = normalized_query.as_deref() {
-            let message_match = messages
-                .iter()
-                .any(|message| message.content.to_lowercase().contains(query));
-            let handle_match = handle.to_lowercase().contains(query);
-            let root_match = root_uri.to_lowercase().contains(query);
-
-            if !message_match && !handle_match && !root_match {
-                continue;
-            }
-        }
-
-        summaries.push(ThreadSummary {
-            root_uri,
-            handle,
-            preview: formatters::shorten(&preview_message.content, 90),
-            last_seen: formatters::rel_event(last_activity_us),
-            message_count,
-        });
-    }
-
-    Ok(summaries)
-}
-
-async fn load_thread_messages(repo: &LibsqlRepository, root_uri: &str) -> anyhow::Result<Vec<ThreadMessageView>> {
-    let messages = repo.get_thread_by_root(root_uri).await?;
-    let mut views = Vec::new();
-    let mut handle_cache: HashMap<String, String> = HashMap::new();
-    let mut last_user_timestamp: Option<DateTime<Utc>> = None;
-
-    for message in messages {
-        let timestamp = formatters::parse_rfc3339(&message.created_at);
-        let timestamp_label = formatters::ftime(&message.created_at);
-
-        let author = match message.role {
-            Role::Model => "@thunderbot".to_string(),
-            Role::User => {
-                if let Some(cached) = handle_cache.get(&message.author_did) {
-                    cached.clone()
-                } else {
-                    let handle = match repo.get_by_did(&message.author_did).await? {
-                        Some(identity) => format!("@{}", identity.handle),
-                        None => formatters::shorten(&message.author_did, 28),
-                    };
-                    handle_cache.insert(message.author_did.clone(), handle.clone());
-                    handle
-                }
-            }
-        };
-
-        let latency = if message.role == Role::Model {
-            match (last_user_timestamp, timestamp) {
-                (Some(previous_user), Some(model_time)) => {
-                    let delta = model_time - previous_user;
-                    let millis = delta.num_milliseconds();
-                    if millis >= 0 { Some(format!("thinking {}", formatters::latency(millis as u64))) } else { None }
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        if message.role == Role::User {
-            last_user_timestamp = timestamp;
-        }
-
-        views.push(ThreadMessageView {
-            role: message.role,
-            author,
-            content: message.content,
-            timestamp: timestamp_label,
-            latency,
-        });
-    }
-
-    Ok(views)
 }
 
 fn bot_did_or_fallback(settings: &Settings) -> String {

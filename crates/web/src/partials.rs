@@ -1,4 +1,6 @@
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
+
+const CONFIRM_MODAL_JS: &str = include_str!("assets/confirm_modal.js");
 
 /// Shared `<head>` block: charset, viewport, Pico CSS, app stylesheet, and optional extras.
 pub(crate) fn head(title: &str) -> Markup {
@@ -63,6 +65,28 @@ pub(crate) fn search_bar(action: &str, name: &str, value: &str, placeholder: &st
         form method="get" action=(action) role="search" {
             input type="search" name=(name) value=(value) placeholder=(placeholder);
             button type="submit" { (button_label) }
+        }
+    }
+}
+
+/// Shared confirmation modal host. Works with HTMX `hx-confirm` + `data-confirm-modal`.
+pub(crate) fn confirm_modal_host() -> Markup {
+    html! {
+        div id="tb-confirm-modal" x-data="tbConfirmModal()" {
+            dialog class="tb-confirm-dialog" x-ref="dialog" {
+                article {
+                    a href="#close" aria-label="Close" class="close" x-ref="closeButton" {}
+                    h3 x-ref="titleEl" { "Confirm action" }
+                    p class="muted" x-ref="messageEl" { "Are you sure you want to continue?" }
+                    footer class="tb-confirm-actions" {
+                        a href="#cancel" role="button" class="secondary" x-ref="cancelButton" { "Cancel" }
+                        a href="#confirm" role="button" x-ref="confirmButton" data-variant="default" { "Confirm" }
+                    }
+                }
+            }
+        }
+        script {
+            (PreEscaped(CONFIRM_MODAL_JS))
         }
     }
 }
