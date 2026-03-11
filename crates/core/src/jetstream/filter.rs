@@ -221,7 +221,7 @@ mod tests {
             time_us: 1234567890,
             identity: crate::jetstream::types::IdentityData {
                 did: "did:plc:user123".to_string(),
-                handle: "user.bsky.social".to_string(),
+                handle: Some("user.bsky.social".to_string()),
                 seq: 1,
                 time: "2024-01-01T00:00:00.000Z".to_string(),
             },

@@ -194,7 +194,7 @@ impl JetstreamClient {
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!("Failed to parse event: {} | JSON: {}", e, &text[..text.len().min(500)]);
-                return Err(e.into());
+                return Ok(());
             }
         };
 

@@ -120,7 +120,7 @@ pub struct AiConfig {
 }
 
 fn default_ai_base_url() -> String {
-    "https://api.z.ai/api/paas/v4".to_string()
+    "https://api.z.ai/api/coding/paas/v4".to_string()
 }
 
 fn default_ai_model() -> String {

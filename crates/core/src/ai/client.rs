@@ -9,7 +9,7 @@ use rand::RngExt;
 use reqwest::StatusCode;
 use std::time::Duration;
 
-const DEFAULT_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+const DEFAULT_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 const DEFAULT_MODEL: &str = "glm-5";
 const MAX_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
@@ -145,20 +145,21 @@ impl Glm5Client {
                     .map_err(|e| BotError::AiSerialization(format!("Failed to parse response: {}", e)));
             }
 
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+
             if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) && attempt + 1 < MAX_RETRIES {
                 let backoff = calculate_backoff(attempt);
                 tracing::warn!(
-                    "GLM-5 API returned {} (attempt {}/{}), retrying after {}ms",
+                    "GLM-5 API returned {} (attempt {}/{}), retrying after {}ms: {}",
                     status,
                     attempt + 1,
                     MAX_RETRIES,
-                    backoff
+                    backoff,
+                    truncate_for_log(&error_text, 240),
                 );
                 tokio::time::sleep(Duration::from_millis(backoff)).await;
                 continue;
             }
-
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
 
             return Err(match status.as_u16() {
                 401 => BotError::AiAuthentication(format!("Invalid API key: {}", error_text)),
@@ -221,6 +222,21 @@ fn calculate_backoff(attempt: usize) -> u64 {
     capped.saturating_add(jitter)
 }
 
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut iter = text.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = iter.next() else {
+            return out;
+        };
+        out.push(ch);
+    }
+    if iter.next().is_some() {
+        out.push_str("...");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +277,12 @@ mod tests {
 
         let b5 = calculate_backoff(5);
         assert!(b5 <= MAX_BACKOFF_MS + 1000);
+    }
+
+    #[test]
+    fn test_truncate_for_log() {
+        assert_eq!(truncate_for_log("hello", 10), "hello");
+        assert_eq!(truncate_for_log("abcdefghij", 5), "abcde...");
     }
 
     #[test]

@@ -57,7 +57,8 @@ impl Display for CommitOperation {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdentityData {
     pub did: String,
-    pub handle: String,
+    #[serde(default)]
+    pub handle: Option<String>,
     pub seq: i64,
     pub time: String,
 }
@@ -221,7 +222,31 @@ mod tests {
         let event: JetstreamEvent = serde_json::from_str(json).unwrap();
         match event {
             JetstreamEvent::Identity { identity, .. } => {
-                assert_eq!(identity.handle, "user.bsky.social");
+                assert_eq!(identity.handle.as_deref(), Some("user.bsky.social"));
+            }
+            _ => panic!("Expected Identity event"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_identity_event_without_handle() {
+        let json = r#"
+        {
+            "did": "did:plc:test",
+            "time_us": 1725516665234703,
+            "kind": "identity",
+            "identity": {
+                "did": "did:plc:test",
+                "seq": 1409752997,
+                "time": "2024-09-05T06:11:04.870Z"
+            }
+        }
+        "#;
+
+        let event: JetstreamEvent = serde_json::from_str(json).unwrap();
+        match event {
+            JetstreamEvent::Identity { identity, .. } => {
+                assert_eq!(identity.handle, None);
             }
             _ => panic!("Expected Identity event"),
         }

@@ -142,6 +142,28 @@ pub enum AiAction {
     #[command(about = "Send a one-shot prompt to GLM-5")]
     Prompt { text: String },
 
+    #[command(about = "Send direct test request(s) with optional overrides")]
+    Request {
+        #[arg(help = "User message content")]
+        text: String,
+        #[arg(long, help = "Optional system message")]
+        system: Option<String>,
+        #[arg(long, help = "Override base URL")]
+        base_url: Option<String>,
+        #[arg(long, help = "Override API key")]
+        api_key: Option<String>,
+        #[arg(long, help = "Override model")]
+        model: Option<String>,
+        #[arg(long, help = "Override temperature")]
+        temperature: Option<f64>,
+        #[arg(long, help = "Override max tokens")]
+        max_tokens: Option<u32>,
+        #[arg(long, default_value_t = 1, help = "Number of requests to send")]
+        repeat: u32,
+        #[arg(long, default_value_t = 0, help = "Delay between requests in milliseconds")]
+        delay_ms: u64,
+    },
+
     #[command(about = "Interactive chat session with GLM-5")]
     Chat,
 
@@ -307,6 +329,32 @@ mod tests {
         match cli.command {
             Commands::Ai { action: AiAction::Prompt { text } } => assert_eq!(text, "Hello AI"),
             _ => panic!("Expected AI Prompt command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_ai_request_with_overrides() {
+        let args = vec![
+            "tnbot",
+            "ai",
+            "request",
+            "Hello AI",
+            "--model",
+            "glm-5",
+            "--repeat",
+            "3",
+            "--delay-ms",
+            "250",
+        ];
+        let cli = Cli::parse_from(args);
+        match cli.command {
+            Commands::Ai { action: AiAction::Request { text, model, repeat, delay_ms, .. } } => {
+                assert_eq!(text, "Hello AI");
+                assert_eq!(model.as_deref(), Some("glm-5"));
+                assert_eq!(repeat, 3);
+                assert_eq!(delay_ms, 250);
+            }
+            _ => panic!("Expected AI Request command"),
         }
     }
 }

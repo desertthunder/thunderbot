@@ -55,6 +55,22 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Ai { action } => match action {
             AiAction::Prompt { text } => commands::ai::prompt(&settings.ai, text, cli.json).await?,
+            AiAction::Request { text, system, base_url, api_key, model, temperature, max_tokens, repeat, delay_ms } => {
+                commands::ai::request(
+                    &settings.ai,
+                    text,
+                    system,
+                    base_url,
+                    api_key,
+                    model,
+                    temperature,
+                    max_tokens,
+                    repeat,
+                    delay_ms,
+                    cli.json,
+                )
+                .await?
+            }
             AiAction::Chat => commands::ai::chat(&settings.ai).await?,
             AiAction::Context { root_uri } => {
                 commands::ai::context(&settings.ai, &settings.database.path, root_uri, cli.json).await?

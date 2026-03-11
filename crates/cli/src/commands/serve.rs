@@ -10,7 +10,7 @@ use tnbot_core::bsky::BskyClient;
 use tnbot_core::db::connection::DatabaseManager;
 use tnbot_core::db::migrations::run_migrations;
 use tnbot_core::db::repository::LibsqlRepository;
-use tnbot_core::embedding::{EmbeddingPipeline, EmbeddingPipelineConfig};
+use tnbot_core::embedding::{EmbeddingPipeline, EmbeddingPipelineConfig, EmbeddingProvider};
 use tnbot_core::jetstream::{EventProcessor, FilteredEvent, ProcessedEvent};
 use tnbot_core::services::{AccessPolicy, ActionPipeline, MemoryRetriever, MemoryRetrieverConfig};
 use tnbot_web::runtime::SharedRuntimeState;
@@ -263,6 +263,34 @@ async fn update_presence_status(client: &BskyClient, emoji: &str, dry_run: bool)
     }
 }
 
+async fn verify_embedding_provider(settings: &Settings, provider: &Arc<dyn EmbeddingProvider>) -> anyhow::Result<()> {
+    let probe_text = "thunderbot startup embedding probe";
+    let embedding = provider.embed(probe_text).await.with_context(|| {
+        format!(
+            "Embedding provider preflight failed (provider=`{}`, model=`{}`, base_url=`{}`)",
+            settings.embedding.provider, settings.embedding.model, settings.embedding.base_url
+        )
+    })?;
+
+    if embedding.len() != settings.embedding.dimensions {
+        anyhow::bail!(
+            "Embedding provider dimension mismatch: got {}, expected {} for model `{}`",
+            embedding.len(),
+            settings.embedding.dimensions,
+            settings.embedding.model
+        );
+    }
+
+    tracing::info!(
+        provider = %settings.embedding.provider,
+        model = %settings.embedding.model,
+        base_url = %settings.embedding.base_url,
+        dimensions = embedding.len(),
+        "Embedding provider preflight succeeded"
+    );
+    Ok(())
+}
+
 pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     let mode_banner = if dry_run {
         "Starting daemon in cognitive dry-run mode (generates AI replies, does not post)..."
@@ -291,7 +319,8 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
     let mut memory_retriever = None;
     let embedding_sender = if settings.memory.enabled {
         tracing::info!("Initializing embedding pipeline...");
-        let provider = Arc::from(settings.embedding.create_provider());
+        let provider: Arc<dyn EmbeddingProvider> = Arc::from(settings.embedding.create_provider());
+        verify_embedding_provider(settings, &provider).await?;
         let pipeline_config = EmbeddingPipelineConfig {
             poll_interval_secs: 30,
             batch_size: settings.embedding.batch_size,
@@ -300,7 +329,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
             post_ttl_days: settings.memory.ttl_days,
         };
 
-        let (pipeline, rx) = EmbeddingPipeline::new(repo.clone(), provider, pipeline_config);
+        let (pipeline, rx) = EmbeddingPipeline::new(repo.clone(), provider.clone(), pipeline_config);
 
         let sender = pipeline.sender();
 
@@ -308,7 +337,7 @@ pub async fn run(settings: &Settings, dry_run: bool) -> anyhow::Result<()> {
 
         memory_retriever = Some(MemoryRetriever::new(
             (*repo).clone(),
-            Arc::from(settings.embedding.create_provider()),
+            provider.clone(),
             MemoryRetrieverConfig::default(),
         ));
 

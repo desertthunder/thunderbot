@@ -216,6 +216,11 @@ tnbot jetstream replay --cursor 1234567890
 # Send a one-off prompt
 tnbot ai prompt "What is the AT Protocol?"
 
+# Send direct request(s) with overrides (good for rate-limit and provider testing)
+tnbot ai request "Reply with exactly: ok" --repeat 5 --delay-ms 250
+tnbot ai request "Return JSON: {\"ok\":true}" --model glm-5 --max-tokens 32 --json
+tnbot ai request "test" --base-url https://api.z.ai/api/coding/paas/v4 --api-key "$GLM_5_API_KEY"
+
 # Interactive chat session
 tnbot ai chat
 

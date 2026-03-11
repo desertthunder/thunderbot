@@ -1,7 +1,7 @@
 //! GLM-5 AI Client types
 //!
 //! OpenAI-compatible API types for Z.ai's GLM-5 model.
-//! See: https://api.z.ai/api/paas/v4/chat/completions
+//! See: https://api.z.ai/api/coding/paas/v4/chat/completions
 
 use serde::{Deserialize, Serialize};
 
