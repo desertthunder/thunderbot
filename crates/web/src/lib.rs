@@ -1,3 +1,8 @@
+mod formatters;
+mod partials;
+pub mod runtime;
+mod views;
+
 use anyhow::Context;
 use axum::extract::{Form, Query, Request, State};
 use axum::http::{StatusCode, header};
@@ -6,7 +11,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
+use runtime::SharedRuntimeState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -22,13 +28,8 @@ use tnbot_core::db::repository::{
 };
 use tokio::sync::RwLock;
 
-pub mod runtime;
-mod views;
-
-use runtime::SharedRuntimeState;
-
 const SESSION_COOKIE: &str = "tnbot_session";
-const CSS: &str = include_str!("assets.css");
+const CSS: &str = include_str!("assets/stylesheet.css");
 
 #[derive(Clone)]
 struct AppState {
@@ -117,6 +118,12 @@ enum NavItem {
     Logs,
     Chat,
     Config,
+}
+
+impl NavItem {
+    fn items() -> Vec<NavItem> {
+        vec![NavItem::Dashboard, NavItem::Logs, NavItem::Chat, NavItem::Config]
+    }
 }
 
 #[derive(Debug)]
@@ -315,10 +322,10 @@ async fn login_page(
     if let Some(cookie) = jar.get(SESSION_COOKIE)
         && state.auth.validate_session(cookie.value()).await
     {
-        return Redirect::to("/dashboard").into_response();
+        Redirect::to("/dashboard").into_response()
+    } else {
+        Html(views::login_page(query.error.as_deref(), query.notice.as_deref()).into_string()).into_response()
     }
-
-    Html(views::login_page(query.error.as_deref(), query.notice.as_deref()).into_string()).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,7 +477,7 @@ async fn chat_page(State(state): State<AppState>, Query(query): Query<ChatQuery>
                     NavItem::Chat,
                     "Chat",
                     state.runtime.is_paused(),
-                    &format_uptime(state.runtime.started_at()),
+                    &formatters::fuptime(state.runtime.started_at()),
                     content,
                 )
                 .into_string(),
@@ -502,7 +509,7 @@ async fn chat_page(State(state): State<AppState>, Query(query): Query<ChatQuery>
             NavItem::Chat,
             "Chat",
             state.runtime.is_paused(),
-            &format_uptime(state.runtime.started_at()),
+            &formatters::fuptime(state.runtime.started_at()),
             content,
         )
         .into_string(),
@@ -723,7 +730,7 @@ async fn dashboard_snapshot_or_default(state: &AppState) -> DashboardSnapshot {
         tracing::error!(error = %e, "Failed to build dashboard snapshot");
         DashboardSnapshot {
             paused: state.runtime.is_paused(),
-            uptime: format_uptime(state.runtime.started_at()),
+            uptime: formatters::fuptime(state.runtime.started_at()),
             last_event_label: "unavailable".to_string(),
             last_event_absolute: "unavailable".to_string(),
             queue_depth: state.runtime.events_in_flight(),
@@ -742,13 +749,13 @@ fn build_config_snapshot(state: &AppState) -> ConfigSnapshot {
     let settings = &state.settings;
     ConfigSnapshot {
         bot_name: settings.bot.name.clone(),
-        bot_did: non_empty_or_missing(&settings.bot.did),
-        bluesky_handle: non_empty_or_missing(&settings.bluesky.handle),
+        bot_did: formatters::non_empty_or_missing(&settings.bot.did),
+        bluesky_handle: formatters::non_empty_or_missing(&settings.bluesky.handle),
         bluesky_pds_host: settings.bluesky.pds_host.clone(),
-        bluesky_password_status: secret_status(&settings.bluesky.app_password),
+        bluesky_password_status: formatters::secret_status(&settings.bluesky.app_password),
         ai_base_url: settings.ai.base_url.clone(),
         ai_model: settings.ai.model.clone(),
-        ai_api_key_status: secret_status(&settings.ai.api_key),
+        ai_api_key_status: formatters::secret_status(&settings.ai.api_key),
         db_path: settings.database.path.display().to_string(),
         logging_level: settings.logging.level.clone(),
         logging_format: format!("{:?}", settings.logging.format).to_lowercase(),
@@ -793,9 +800,9 @@ async fn load_dashboard_snapshot(state: &AppState) -> anyhow::Result<DashboardSn
 
     Ok(DashboardSnapshot {
         paused: state.runtime.is_paused(),
-        uptime: format_uptime(state.runtime.started_at()),
-        last_event_label: format_relative_event(last_event_us),
-        last_event_absolute: format_absolute_event(last_event_us),
+        uptime: formatters::fuptime(state.runtime.started_at()),
+        last_event_label: formatters::rel_event(last_event_us),
+        last_event_absolute: formatters::abs_event(last_event_us),
         queue_depth: state.runtime.events_in_flight(),
         pending_embeddings,
         monthly_tokens,
@@ -860,7 +867,7 @@ async fn load_thread_summaries(repo: &LibsqlRepository, search: Option<&str>) ->
 
         let handle = match repo.get_by_did(&handle_did).await? {
             Some(identity) => format!("@{}", identity.handle),
-            None => shorten(&handle_did, 28),
+            None => formatters::shorten(&handle_did, 28),
         };
 
         if let Some(query) = normalized_query.as_deref() {
@@ -878,8 +885,8 @@ async fn load_thread_summaries(repo: &LibsqlRepository, search: Option<&str>) ->
         summaries.push(ThreadSummary {
             root_uri,
             handle,
-            preview: shorten(&preview_message.content, 90),
-            last_seen: format_relative_event(last_activity_us),
+            preview: formatters::shorten(&preview_message.content, 90),
+            last_seen: formatters::rel_event(last_activity_us),
             message_count,
         });
     }
@@ -894,8 +901,8 @@ async fn load_thread_messages(repo: &LibsqlRepository, root_uri: &str) -> anyhow
     let mut last_user_timestamp: Option<DateTime<Utc>> = None;
 
     for message in messages {
-        let timestamp = parse_rfc3339(&message.created_at);
-        let timestamp_label = format_time(&message.created_at);
+        let timestamp = formatters::parse_rfc3339(&message.created_at);
+        let timestamp_label = formatters::ftime(&message.created_at);
 
         let author = match message.role {
             Role::Model => "@thunderbot".to_string(),
@@ -905,7 +912,7 @@ async fn load_thread_messages(repo: &LibsqlRepository, root_uri: &str) -> anyhow
                 } else {
                     let handle = match repo.get_by_did(&message.author_did).await? {
                         Some(identity) => format!("@{}", identity.handle),
-                        None => shorten(&message.author_did, 28),
+                        None => formatters::shorten(&message.author_did, 28),
                     };
                     handle_cache.insert(message.author_did.clone(), handle.clone());
                     handle
@@ -918,7 +925,7 @@ async fn load_thread_messages(repo: &LibsqlRepository, root_uri: &str) -> anyhow
                 (Some(previous_user), Some(model_time)) => {
                     let delta = model_time - previous_user;
                     let millis = delta.num_milliseconds();
-                    if millis >= 0 { Some(format!("thinking {}", format_latency(millis as u64))) } else { None }
+                    if millis >= 0 { Some(format!("thinking {}", formatters::latency(millis as u64))) } else { None }
                 }
                 _ => None,
             }
@@ -947,104 +954,5 @@ fn bot_did_or_fallback(settings: &Settings) -> String {
         "did:unknown".to_string()
     } else {
         settings.bot.did.clone()
-    }
-}
-
-fn format_uptime(started_at: Instant) -> String {
-    let total_secs = started_at.elapsed().as_secs();
-    let days = total_secs / 86_400;
-    let hours = (total_secs % 86_400) / 3_600;
-    let minutes = (total_secs % 3_600) / 60;
-
-    if days > 0 {
-        format!("{}d {:02}h {:02}m", days, hours, minutes)
-    } else {
-        format!("{:02}h {:02}m", hours, minutes)
-    }
-}
-
-fn parse_rfc3339(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
-fn format_time(value: &str) -> String {
-    parse_rfc3339(value)
-        .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
-        .unwrap_or_else(|| value.to_string())
-}
-
-fn format_relative_event(time_us: i64) -> String {
-    if time_us <= 0 {
-        return "waiting".to_string();
-    }
-
-    let dt = datetime_from_micros(time_us);
-    let Some(dt) = dt else {
-        return "unknown".to_string();
-    };
-
-    let now = Utc::now();
-    let delta = now - dt;
-
-    if delta.num_seconds() < 5 {
-        "just now".to_string()
-    } else if delta.num_seconds() < 60 {
-        format!("{}s ago", delta.num_seconds())
-    } else if delta.num_minutes() < 60 {
-        format!("{}m ago", delta.num_minutes())
-    } else if delta.num_hours() < 24 {
-        format!("{}h ago", delta.num_hours())
-    } else {
-        format!("{}d ago", delta.num_days())
-    }
-}
-
-fn format_absolute_event(time_us: i64) -> String {
-    datetime_from_micros(time_us)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-        .unwrap_or_else(|| "No event timestamp available".to_string())
-}
-
-fn datetime_from_micros(time_us: i64) -> Option<DateTime<Utc>> {
-    let seconds = time_us.div_euclid(1_000_000);
-    let micros = time_us.rem_euclid(1_000_000) as u32;
-    Utc.timestamp_opt(seconds, micros * 1_000).single()
-}
-
-fn format_compact(value: i64) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}M", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{:.1}K", value as f64 / 1_000.0)
-    } else {
-        value.to_string()
-    }
-}
-
-fn format_latency(ms: u64) -> String {
-    if ms < 1_000 { format!("{}ms", ms) } else { format!("{:.1}s", ms as f64 / 1_000.0) }
-}
-
-fn shorten(value: &str, max: usize) -> String {
-    if value.chars().count() <= max {
-        return value.to_string();
-    }
-
-    value.chars().take(max.saturating_sub(3)).chain("...".chars()).collect()
-}
-
-fn non_empty_or_missing(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() { "(not set)".to_string() } else { trimmed.to_string() }
-}
-
-fn secret_status(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        "missing".to_string()
-    } else {
-        format!("set ({} chars)", trimmed.chars().count())
     }
 }

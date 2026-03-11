@@ -1,22 +1,13 @@
+use super::{AppState, ChatQuery, ConfigSnapshot, DashboardSnapshot, NavItem, ThreadMessageView, ThreadSummary};
+use super::{bot_did_or_fallback, formatters, partials};
 use maud::{DOCTYPE, Markup, html};
 use tnbot_core::db::models::{Conversation, FailedEvent, Identity, Role};
-
-use super::{
-    AppState, ChatQuery, ConfigSnapshot, DashboardSnapshot, NavItem, ThreadMessageView, ThreadSummary,
-    bot_did_or_fallback, format_compact, format_time, shorten,
-};
 
 pub(super) fn login_page(error: Option<&str>, notice: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" data-theme="dark" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "Thunderbot Login" }
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";
-                link rel="stylesheet" href="/assets/app.css";
-            }
+            (partials::head("Thunderbot Login"))
             body class="auth" {
                 main class="container" {
                     article {
@@ -30,12 +21,7 @@ pub(super) fn login_page(error: Option<&str>, notice: Option<&str>) -> Markup {
                             }
                         }
 
-                        @if let Some(notice_message) = notice {
-                            article class="notice" data-tone="success" { (notice_message) }
-                        }
-                        @if let Some(error_message) = error {
-                            article class="notice" data-tone="error" { (error_message) }
-                        }
+                        (partials::notices(notice, error))
 
                         form method="post" action="/login" {
                             label for="username" {
@@ -64,15 +50,7 @@ pub(super) fn shell(
     html! {
         (DOCTYPE)
         html lang="en" data-theme="dark" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (page_title) " - Thunderbot" }
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";
-                link rel="stylesheet" href="/assets/app.css";
-                script src="https://unpkg.com/htmx.org@1.9.12" defer {}
-                script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer {}
-            }
+            (partials::head_with_scripts(&format!("{} - Thunderbot", page_title)))
             body {
                 div class="app-shell" {
                     header class="app-header" {
@@ -92,17 +70,16 @@ pub(super) fn shell(
                     aside class="app-nav" {
                         nav {
                             ul {
-                                li { (nav_link("/dashboard", "Status", active == NavItem::Dashboard)) }
-                                li { (nav_link("/logs", "Logs", active == NavItem::Logs)) }
-                                li { (nav_link("/chat", "Chat", active == NavItem::Chat)) }
-                                li { (nav_link("/config", "Config", active == NavItem::Config)) }
+                                @for item in NavItem::items() {
+                                    li { (nav_link(item, active)) }
+                                }
                             }
                         }
 
                         footer {
                             small {
                                 "bot: " (state.settings.bot.name.as_str()) br;
-                                span class="mono" { (shorten(&bot_did_or_fallback(&state.settings), 36)) }
+                                span class="mono" { (formatters::shorten(&bot_did_or_fallback(&state.settings), 36)) }
                             }
                             form method="post" action="/logout" {
                                 button type="submit" class="secondary" { "Sign Out" }
@@ -110,9 +87,7 @@ pub(super) fn shell(
                         }
                     }
 
-                    main class="app-main" {
-                        (content)
-                    }
+                    main class="app-main" { (content) }
                 }
             }
         }
@@ -124,40 +99,35 @@ pub(super) fn live_status_cards(snapshot: &DashboardSnapshot) -> Markup {
 
     html! {
         section class="grid" {
-            article {
-                header { "Last Jetstream Event" }
-                h3 { (snapshot.last_event_label.as_str()) }
-                small class="mono muted" { (snapshot.last_event_absolute.as_str()) }
-            }
+            (partials::stat_card(
+                "Last Jetstream Event",
+                snapshot.last_event_label.as_str(),
+                Some(snapshot.last_event_absolute.as_str()),
+            ))
 
-            article data-tone=(queue_tone) {
-                header { "Processing Queue Depth" }
-                h3 { (snapshot.queue_depth) }
-                small class="muted" { (format!("{} pending embedding jobs", snapshot.pending_embeddings)) }
-            }
+            (partials::stat_card_with_tone(
+                "Processing Queue Depth",
+                &snapshot.queue_depth.to_string(),
+                Some(&format!("{} pending embedding jobs", snapshot.pending_embeddings)),
+                queue_tone,
+            ))
 
-            article {
-                header { "Monthly Token Usage" }
-                h3 { (format_compact(snapshot.monthly_tokens)) }
-                small class="muted" { "Estimated from persisted model responses" }
-            }
+            (partials::stat_card(
+                "Monthly Token Usage",
+                &formatters::fcompact(snapshot.monthly_tokens),
+                Some("Estimated from persisted model responses"),
+            ))
 
-            article {
-                header { "Pipeline" }
-                h3 { (format!("{} ok / {} fail", snapshot.processed_events, snapshot.failed_events)) }
-                small class="muted" { (format!("last model latency: {} ms", snapshot.last_model_latency_ms)) }
-            }
+            (partials::stat_card(
+                "Pipeline",
+                &format!("{} ok / {} fail", snapshot.processed_events, snapshot.failed_events),
+                Some(&format!("last model latency: {} ms", snapshot.last_model_latency_ms)),
+            ))
         }
 
         section class="grid" {
-            article {
-                header { "Conversations" }
-                h3 { (snapshot.conversation_count) }
-            }
-            article {
-                header { "Identities" }
-                h3 { (snapshot.identity_count) }
-            }
+            (partials::stat_card("Conversations", &snapshot.conversation_count.to_string(), None))
+            (partials::stat_card("Identities", &snapshot.identity_count.to_string(), None))
         }
     }
 }
@@ -166,18 +136,41 @@ pub(super) fn dashboard_content(
     notice: Option<&str>, error: Option<&str>, snapshot: &DashboardSnapshot, dry_run: bool,
     conversations: &[Conversation], identities: &[Identity],
 ) -> Markup {
-    html! {
-        header {
-            h1 { "Live Status Dashboard" }
-            p class="muted" { "Jetstream pipeline telemetry, controls, and database state" }
-        }
+    let conversation_rows: Vec<Vec<(String, bool)>> = conversations
+        .iter()
+        .map(|row| {
+            vec![
+                (formatters::ftime(&row.created_at), true),
+                (
+                    match row.role {
+                        Role::User => "user",
+                        Role::Model => "model",
+                    }
+                    .to_string(),
+                    false,
+                ),
+                (formatters::shorten(&row.author_did, 34), true),
+                (formatters::shorten(&row.root_uri, 56), true),
+                (formatters::shorten(&row.content, 86), false),
+            ]
+        })
+        .collect();
 
-        @if let Some(notice_message) = notice {
-            article class="notice" data-tone="success" { (notice_message) }
-        }
-        @if let Some(error_message) = error {
-            article class="notice" data-tone="error" { (error_message) }
-        }
+    let identity_rows: Vec<Vec<(String, bool)>> = identities
+        .iter()
+        .map(|identity| {
+            vec![
+                (formatters::shorten(&identity.did, 44), true),
+                (identity.handle.clone(), false),
+                (identity.display_name.as_deref().unwrap_or("-").to_string(), false),
+                (formatters::ftime(&identity.last_updated), true),
+            ]
+        })
+        .collect();
+
+    html! {
+        (partials::page_header("Live Status Dashboard", "Jetstream pipeline telemetry, controls, and database state"))
+        (partials::notices(notice, error))
 
         section id="live-status" hx-get="/dashboard/live" hx-trigger="every 5s" hx-swap="innerHTML" {
             (live_status_cards(snapshot))
@@ -211,64 +204,20 @@ pub(super) fn dashboard_content(
 
         article {
             header { "Recent Conversation Rows" }
-            div class="table-wrap" {
-                table {
-                    thead {
-                        tr {
-                            th { "Time" }
-                            th { "Role" }
-                            th { "Author" }
-                            th { "Thread Root" }
-                            th { "Content" }
-                        }
-                    }
-                    tbody {
-                        @if conversations.is_empty() {
-                            tr { td colspan="5" class="muted" { "No conversation rows yet." } }
-                        } @else {
-                            @for row in conversations {
-                                tr {
-                                    td class="mono" { (format_time(&row.created_at)) }
-                                    td { (match row.role { Role::User => "user", Role::Model => "model" }) }
-                                    td class="mono" { (shorten(&row.author_did, 34)) }
-                                    td class="mono" { (shorten(&row.root_uri, 56)) }
-                                    td { (shorten(&row.content, 86)) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            (partials::data_table(
+                &["Time", "Role", "Author", "Thread Root", "Content"],
+                &conversation_rows,
+                "No conversation rows yet.",
+            ))
         }
 
         article {
             header { "Identity Map" }
-            div class="table-wrap" {
-                table {
-                    thead {
-                        tr {
-                            th { "DID" }
-                            th { "Handle" }
-                            th { "Display Name" }
-                            th { "Last Updated" }
-                        }
-                    }
-                    tbody {
-                        @if identities.is_empty() {
-                            tr { td colspan="4" class="muted" { "No cached identities yet." } }
-                        } @else {
-                            @for identity in identities {
-                                tr {
-                                    td class="mono" { (shorten(&identity.did, 44)) }
-                                    td { (identity.handle.as_str()) }
-                                    td { (identity.display_name.as_deref().unwrap_or("-")) }
-                                    td class="mono" { (format_time(&identity.last_updated)) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            (partials::data_table(
+                &["DID", "Handle", "Display Name", "Last Updated"],
+                &identity_rows,
+                "No cached identities yet.",
+            ))
         }
     }
 }
@@ -276,93 +225,73 @@ pub(super) fn dashboard_content(
 pub(super) fn logs_content(
     snapshot: &DashboardSnapshot, search: Option<&str>, failed_events: &[FailedEvent],
 ) -> Markup {
+    let event_rows: Vec<Vec<(String, bool)>> = failed_events
+        .iter()
+        .map(|event| {
+            vec![
+                (formatters::ftime(&event.last_tried), true),
+                (formatters::shorten(&event.post_uri, 64), true),
+                (event.attempts.to_string(), false),
+                (formatters::shorten(&event.error, 120), false),
+            ]
+        })
+        .collect();
+
     html! {
-        header {
-            h1 { "Logs" }
-            p class="muted" { "Operational failures and pipeline diagnostics" }
-        }
+        (partials::page_header("Logs", "Operational failures and pipeline diagnostics"))
 
         section class="grid" {
-            article { header { "Processed" } h3 { (snapshot.processed_events) } }
-            article { header { "Failed" } h3 { (snapshot.failed_events) } }
-            article { header { "Queue Depth" } h3 { (snapshot.queue_depth) } }
-            article { header { "Last Model Latency" } h3 { (format!("{}ms", snapshot.last_model_latency_ms)) } }
+            (partials::stat_card("Processed", &snapshot.processed_events.to_string(), None))
+            (partials::stat_card("Failed", &snapshot.failed_events.to_string(), None))
+            (partials::stat_card("Queue Depth", &snapshot.queue_depth.to_string(), None))
+            (partials::stat_card("Last Model Latency", &format!("{}ms", snapshot.last_model_latency_ms), None))
         }
 
         article {
-            form method="get" action="/logs" {
-                div class="grid" {
-                    input type="search" name="q" value=(search.unwrap_or_default()) placeholder="Filter by post URI, error text, or payload";
-                    button type="submit" { "Filter" }
-                }
-            }
+            (partials::search_bar("/logs", "q", search.unwrap_or_default(), "Filter by post URI, error text, or payload", "Filter"))
         }
 
         article {
             header { "Recent Failed Events" }
-            div class="table-wrap" {
-                table {
-                    thead {
-                        tr {
-                            th { "Time" }
-                            th { "Post URI" }
-                            th { "Attempts" }
-                            th { "Error" }
-                        }
-                    }
-                    tbody {
-                        @if failed_events.is_empty() {
-                            tr { td colspan="4" class="muted" { "No failed events recorded." } }
-                        } @else {
-                            @for event in failed_events {
-                                tr {
-                                    td class="mono" { (format_time(&event.last_tried)) }
-                                    td class="mono" { (shorten(&event.post_uri, 64)) }
-                                    td { (event.attempts) }
-                                    td { (shorten(&event.error, 120)) }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            (partials::data_table(
+                &["Time", "Post URI", "Attempts", "Error"],
+                &event_rows,
+                "No failed events recorded.",
+            ))
         }
     }
 }
 
 pub(super) fn config_content(config: &ConfigSnapshot) -> Markup {
     html! {
-        header {
-            h1 { "Config" }
-            p class="muted" { "Read-only runtime and provider configuration snapshot" }
-        }
+        (partials::page_header("Config", "Read-only runtime and provider configuration snapshot"))
 
         section class="grid" {
-            article { (config_card("Bot", vec![
+            article { (partials::config_card("Bot", vec![
                 ("Name".to_string(), config.bot_name.clone(), false),
                 ("DID".to_string(), config.bot_did.clone(), true),
                 ("Dry Run".to_string(), if config.dry_run { "enabled" } else { "disabled" }.to_string(), false),
             ])) }
 
-            article { (config_card("Bluesky", vec![
+            article { (partials::config_card("Bluesky", vec![
                 ("Handle".to_string(), config.bluesky_handle.clone(), false),
                 ("PDS Host".to_string(), config.bluesky_pds_host.clone(), true),
                 ("App Password".to_string(), config.bluesky_password_status.clone(), false),
             ])) }
 
-            article { (config_card("AI", vec![
+            article { (partials::config_card("AI", vec![
                 ("Model".to_string(), config.ai_model.clone(), false),
                 ("Base URL".to_string(), config.ai_base_url.clone(), true),
                 ("API Key".to_string(), config.ai_api_key_status.clone(), false),
             ])) }
 
-            article { (config_card("Storage + Logs", vec![
+            article { (partials::config_card("Storage + Logs", vec![
                 ("Database Path".to_string(), config.db_path.clone(), true),
                 ("Log Level".to_string(), config.logging_level.clone(), false),
                 ("Log Format".to_string(), config.logging_format.clone(), false),
             ])) }
 
-            article { (config_card("Memory", vec![
+            article { (partials::config_card("Memory", vec![
                 ("Enabled".to_string(), if config.memory_enabled { "yes" } else { "no" }.to_string(), false),
                 ("TTL".to_string(), format!("{} days", config.memory_ttl_days), false),
                 (
@@ -377,7 +306,7 @@ pub(super) fn config_content(config: &ConfigSnapshot) -> Markup {
                 ),
             ])) }
 
-            article { (config_card("Web Control Deck", vec![
+            article { (partials::config_card("Web Control Deck", vec![
                 ("Bind Address".to_string(), config.web_bind_addr.clone(), true),
                 ("Username".to_string(), config.web_username.clone(), false),
                 ("Password Mode".to_string(), config.web_password_mode.clone(), false),
@@ -388,13 +317,8 @@ pub(super) fn config_content(config: &ConfigSnapshot) -> Markup {
 
 pub(super) fn chat_error_content(error: &str) -> Markup {
     html! {
-        header {
-            h1 { "Chat" }
-            p class="muted" { "Conversation inspector" }
-        }
-        article class="notice" data-tone="error" {
-            "Failed to load conversation data: " (error)
-        }
+        (partials::page_header("Chat", "Conversation inspector"))
+        (partials::notice(error, "error"))
     }
 }
 
@@ -403,25 +327,12 @@ pub(super) fn chat_content(
     thread_messages: &[ThreadMessageView],
 ) -> Markup {
     html! {
-        header {
-            h1 { "Chat" }
-            p class="muted" { "Conversation inspector and manual override reply controls" }
-        }
+        (partials::page_header("Chat", "Conversation inspector and manual override reply controls"))
 
-        @if let Some(notice_message) = query.notice.as_deref() {
-            article class="notice" data-tone="success" { (notice_message) }
-        }
-        @if let Some(error_message) = query.error.as_deref() {
-            article class="notice" data-tone="error" { (error_message) }
-        }
+        (partials::notices(query.notice.as_deref(), query.error.as_deref()))
 
         article {
-            form method="get" action="/chat" {
-                div class="grid" {
-                    input type="search" name="q" value=(query.q.as_deref().unwrap_or("")) placeholder="Search by handle, DID, or message content";
-                    button type="submit" { "Search" }
-                }
-            }
+            (partials::search_bar("/chat", "q", query.q.as_deref().unwrap_or(""), "Search by handle, DID, or message content", "Search"))
         }
 
         section class="split" {
@@ -432,7 +343,7 @@ pub(super) fn chat_content(
                     } @else {
                         nav {
                             @for thread in thread_summaries {
-                                (thread_link(
+                                (partials::thread_link(
                                     &super::chat_thread_href(&thread.root_uri, query.q.as_deref()),
                                     selected_root == Some(thread.root_uri.as_str()),
                                     &thread.handle,
@@ -497,48 +408,19 @@ pub(super) fn chat_content(
     }
 }
 
-fn nav_link(href: &str, label: &str, active: bool) -> Markup {
+fn nav_link(item: NavItem, current: NavItem) -> Markup {
+    let active = item == current;
+
+    let (href, label) = match item {
+        NavItem::Dashboard => ("/dashboard", "Status"),
+        NavItem::Logs => ("/logs", "Logs"),
+        NavItem::Chat => ("/chat", "Chat"),
+        NavItem::Config => ("/config", "Config"),
+    };
+
     if active {
         html! { a href=(href) aria-current="page" { (label) } }
     } else {
         html! { a href=(href) { (label) } }
-    }
-}
-
-fn thread_link(href: &str, active: bool, handle: &str, last_seen: &str, preview: &str, message_count: usize) -> Markup {
-    if active {
-        html! {
-            a href=(href) class="thread-link" aria-current="page" {
-                strong { (handle) }
-                small class="mono muted" { (last_seen) }
-                p { (preview) }
-                small class="muted" { (format!("{} messages", message_count)) }
-            }
-        }
-    } else {
-        html! {
-            a href=(href) class="thread-link" {
-                strong { (handle) }
-                small class="mono muted" { (last_seen) }
-                p { (preview) }
-                small class="muted" { (format!("{} messages", message_count)) }
-            }
-        }
-    }
-}
-
-fn config_card(title: &str, rows: Vec<(String, String, bool)>) -> Markup {
-    html! {
-        header { (title) }
-        dl class="kv" {
-            @for (label, value, is_mono) in rows {
-                dt class="muted" { (label.as_str()) }
-                @if is_mono {
-                    dd class="mono" { (value.as_str()) }
-                } @else {
-                    dd { (value.as_str()) }
-                }
-            }
-        }
     }
 }

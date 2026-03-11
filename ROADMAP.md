@@ -2,6 +2,27 @@
 
 This document outlines the engineering specification for a **Stateful AI Agent** on the AT Protocol (Bluesky), utilizing **GLM-5** for reasoning, **Rust** for infrastructure, and **HTMX + Pico CSS** for the management dashboard.
 
+## ToC
+
+- [Stateful Agent Bot Specification](#stateful-agent-bot-specification)
+  - [ToC](#toc)
+  - [System Architecture](#system-architecture)
+  - [Overview](#overview)
+  - [Milestone 1: The Foundation, Ingestion Layer, and CLI](#milestone-1-the-foundation-ingestion-layer-and-cli)
+  - [Milestone 2: State Persistence and Context](#milestone-2-state-persistence-and-context)
+  - [Milestone 3: Bluesky XRPC Client](#milestone-3-bluesky-xrpc-client)
+  - [Milestone 4: The Cognitive Core (GLM-5)](#milestone-4-the-cognitive-core-glm-5)
+  - [Milestone 5: Vector Memory and Semantic Search](#milestone-5-vector-memory-and-semantic-search)
+  - [Milestone 6: The Control Deck (Web UI)](#milestone-6-the-control-deck-web-ui)
+  - [Milestone 7: Observability \& Health](#milestone-7-observability--health)
+  - [Milestone 8: Developer Experience](#milestone-8-developer-experience)
+  - [Milestone 9: Multi-Model Support](#milestone-9-multi-model-support)
+  - [Milestone 10: Dashboard Enhancements](#milestone-10-dashboard-enhancements)
+  - [Milestone 11: Operational Controls](#milestone-11-operational-controls)
+  - [Milestone 12: Voice Interface](#milestone-12-voice-interface)
+  - [Milestone 13: Deployment/Self-Hosting](#milestone-13-deploymentself-hosting)
+  - [Parking Lot](#parking-lot)
+
 ## System Architecture
 
 - **Runtime**: Provider-agnostic Rust binary. Deployable to Fly.io (containers), Docker, or any container runtime; Can be self-hosted.
@@ -352,7 +373,7 @@ Part 6: Milestone 13
 3. Operators can diagnose issues without reading logs
 4. Dashboard shows real-time service health
 
-### Tasks
+**Tasks**:
 
 1. **Health Check Endpoint**
     - Implement `/health` returning JSON with component status
@@ -400,7 +421,7 @@ Part 6: Milestone 13
 3. Errors include actionable suggestions
 4. Graceful shutdown preserves state
 
-### Tasks
+**Tasks**:
 
 1. **Dry-Run Mode**
     - Add `--dry-run` flag to `serve` (process events, skip posting)
@@ -446,7 +467,7 @@ Part 6: Milestone 13
 5. Existing GLM-5 client is refactored behind the trait (backwards compatible).
 6. CLI commands work with any configured provider.
 
-### Tasks
+**Tasks**:
 
 1. **ModelProvider Trait**
     - **Requirements**:
@@ -506,7 +527,7 @@ Part 6: Milestone 13
 3. Keyboard navigation works throughout
 4. Dark mode available
 
-### Tasks
+**Tasks**:
 
 1. **Conversation Search**
     - Full-text search across message content
@@ -562,7 +583,7 @@ Part 6: Milestone 13
 3. Status communicable via Bluesky profile/posts
 4. Failed events recoverable
 
-### Tasks
+**Tasks**:
 
 1. **Rate Limit Dashboard**
     - Show current Bluesky rate limit usage and reset time
@@ -630,7 +651,7 @@ Part 6: Milestone 13
 4. Voice models are configurable and downloadable via CLI.
 5. Dashboard exposes voice controls and playback.
 
-### Tasks
+**Tasks**:
 
 1. **whisper.cpp Integration (Speech-to-Text)**
     - **Requirements**:
@@ -694,7 +715,7 @@ Part 6: Milestone 13
 4. Logs are structured and actionable
 5. Documentation covers all deployment scenarios
 
-### Tasks
+**Tasks**:
 
 1. **Local Process Support**
     - Add `--address` and `--port` flags to `serve` command
